@@ -1,0 +1,15 @@
+[package]
+name = "barkml"
+version = "0.1.0"
+authors = ["Jarrett Tierney <jmt@amazon.com>"]
+license = "MIT-0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[dependencies]
+base64 = "0.22"
+peg = "0.8"
+serde = { version = "1.0", features = ["derive"]}
+snafu = "0.8"
+[dev-dependencies]
+assert_matches = "1.5"

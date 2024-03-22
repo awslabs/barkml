@@ -1,6 +1,7 @@
 [package]
 name = "barkml"
 version = "0.1.0"
+description = "Declarative configuration language"
 authors = ["Jarrett Tierney <jmt@amazon.com>"]
 license = "MIT-0"
 edition = "2021"

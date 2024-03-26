@@ -1,16 +1,24 @@
 [package]
 name = "barkml"
-version = "0.1.0"
+version = "0.2.0"
 description = "Declarative configuration language"
+repository = "https://github.com/awslabs/barkml"
+categories = ["config"]
 authors = ["Jarrett Tierney <jmt@amazon.com>"]
 license = "MIT-0"
 edition = "2021"
 
+[features]
+default = []
+full = ["binary"]
+binary = ["dep:msgpack_simple"]
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
 base64 = "0.22"
+msgpack_simple = { version = "1.0", optional = true }
 peg = "0.8"
-serde = { version = "1.0", features = ["derive"]}
+serde = { version = "1.0", features = ["derive"] }
 snafu = "0.8"
 [dev-dependencies]
 assert_matches = "1.5"

@@ -1,8 +1,8 @@
-use std::{cmp::max, collections::HashMap};
-use peg::{self, str::LineCol};
+use crate::statement::Statement;
 use crate::value::Value;
 use base64::Engine;
-use crate::statement::Statement;
+use peg::{self, str::LineCol};
+use std::{cmp::max, collections::HashMap};
 
 peg::parser! {
     grammar parser() for str {
@@ -54,7 +54,7 @@ peg::parser! {
         rule byte_string() -> Vec<u8>
             = "b'" s:$(['\0'..='\u{0026}' | '\u{0028}'..='\u{10ffff}']+) "'" {?
             let encoded = s.to_string();
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&encoded).or(Err("not base64 encoded"))
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded).or(Err("not base64 encoded"))
         }
         rule byte_value() -> Value
             = l:prefix()? b:byte_string() { Value::Bytes(b, l) }
@@ -141,7 +141,7 @@ peg::parser! {
 
         pub rule idl() -> Vec<Statement> = ws()? s:(statement() ** ws()) ws()? {?
             let mut adjust_sections = join_statements(s);
-            resolve_macros(&mut adjust_sections, &mut HashMap::new(), None)?;
+            resolve_macros(adjust_sections.as_mut_slice(), &mut HashMap::new(), None)?;
             Ok(adjust_sections)
         }
     }
@@ -151,7 +151,11 @@ pub fn from_str(input: &str) -> Result<Vec<Statement>, peg::error::ParseError<Li
     parser::idl(input)
 }
 
-fn macrotize(input: &str, symbol_table: &mut HashMap<String, Value>, prefix: Option<String>) -> Result<String, &'static str> {
+fn macrotize(
+    input: &str,
+    symbol_table: &mut HashMap<String, Value>,
+    prefix: Option<String>,
+) -> Result<String, &'static str> {
     let mut start_index = -1;
     let original = input.to_string();
     let mut final_string = original.clone();
@@ -164,23 +168,23 @@ fn macrotize(input: &str, symbol_table: &mut HashMap<String, Value>, prefix: Opt
             count += 1;
             let copy = original.clone();
             let (before, after) = copy.split_at(start_index as usize);
-            let (middle, _) = after.split_at(i - before.len() );
-            let mut key = (&middle[1..]).to_string();
+            let (middle, _) = after.split_at(i - before.len());
+            let mut key = middle[1..].to_string();
             if key.starts_with("self.") {
                 key = key.strip_prefix("self.").unwrap().to_string();
                 if let Some(prefix) = prefix.as_ref() {
-                    let segments: Vec<&str> = prefix.split(".").collect();
-                    let prefix = segments[..segments.len()-1].join(".");
+                    let segments: Vec<&str> = prefix.split('.').collect();
+                    let prefix = segments[..segments.len() - 1].join(".");
                     key = format!("{}.{}", prefix, key);
                 }
             } else if key.starts_with("super.") {
                 if let Some(prefix) = prefix.as_ref() {
-                    let segments: Vec<&str> = prefix.split(".").collect();
-                    let mut new_prefix = segments[..segments.len()-1].join(".");
+                    let segments: Vec<&str> = prefix.split('.').collect();
+                    let mut new_prefix = segments[..segments.len() - 1].join(".");
                     while key.starts_with("super.") {
                         key = key.strip_prefix("super.").unwrap().to_string();
-                        let segments: Vec<&str> = new_prefix.split(".").collect();
-                        new_prefix = segments[..segments.len()-1].join(".");
+                        let segments: Vec<&str> = new_prefix.split('.').collect();
+                        new_prefix = segments[..segments.len() - 1].join(".");
                     }
                     key = format!("{}.{}", new_prefix, key);
                 }
@@ -189,11 +193,15 @@ fn macrotize(input: &str, symbol_table: &mut HashMap<String, Value>, prefix: Opt
                 Some(data) => Ok(data.to_macro_string()),
                 None => Err("No symbol found"),
             }?;
-            let sindex = if offset == 0 { i as i64 - count } else { offset + 1 };
-            let (before, rem) = final_string.split_at(max(sindex , 0) as usize);
+            let sindex = if offset == 0 {
+                i as i64 - count
+            } else {
+                offset + 1
+            };
+            let (before, rem) = final_string.split_at(max(sindex, 0) as usize);
             let (_, mut after) = rem.split_at((count + 1) as usize);
-            after = if after.starts_with("}") {
-                after.strip_prefix("}").unwrap()
+            after = if after.starts_with('}') {
+                after.strip_prefix('}').unwrap()
             } else {
                 after
             };
@@ -201,7 +209,7 @@ fn macrotize(input: &str, symbol_table: &mut HashMap<String, Value>, prefix: Opt
             offset += if replacement.len() >= count as usize {
                 replacement.len() as i64
             } else {
-                replacement.len() as i64 - count as i64
+                replacement.len() as i64 - count
             };
             start_index = -1;
             count = 0;
@@ -212,7 +220,11 @@ fn macrotize(input: &str, symbol_table: &mut HashMap<String, Value>, prefix: Opt
     Ok(final_string)
 }
 
-fn resolve_macro(value: &mut Value, symbol_table: &mut HashMap<String, Value>, prefix: Option<String>) -> Result<(), &'static str> {
+fn resolve_macro(
+    value: &mut Value,
+    symbol_table: &mut HashMap<String, Value>,
+    prefix: Option<String>,
+) -> Result<(), &'static str> {
     match value {
         Value::Macro(pattern, label, is_string) => {
             let label = label.clone();
@@ -235,69 +247,94 @@ fn resolve_macro(value: &mut Value, symbol_table: &mut HashMap<String, Value>, p
         }
         Value::Array(array, _) => {
             for (i, item) in array.iter_mut().enumerate() {
-                resolve_macro(item, symbol_table, if let Some(prefix) = prefix.as_ref() {
-                    Some(format!("{}[{}]", prefix, i))
-                } else {
-                    None
-                })?;
+                resolve_macro(
+                    item,
+                    symbol_table,
+                    prefix.as_ref().map(|prefix| format!("{}[{}]", prefix, i)),
+                )?;
             }
         }
         Value::Table(table, _) => {
             for (key, value) in table.iter_mut() {
-                resolve_macro(value, symbol_table, if let Some(prefix) = prefix.as_ref() {
-                    Some(format!("{}.{}", prefix, key))
-                } else {
-                    None
-                })?;
+                resolve_macro(
+                    value,
+                    symbol_table,
+                    prefix.as_ref().map(|prefix| format!("{}.{}", prefix, key)),
+                )?;
             }
         }
-        _ => if let Some(prefix) = prefix.as_ref() {
-            symbol_table.insert(prefix.clone(), value.clone());
+        _ => {
+            if let Some(prefix) = prefix.as_ref() {
+                symbol_table.insert(prefix.clone(), value.clone());
+            }
         }
     }
     Ok(())
 }
 
-fn resolve_macros(input: &mut Vec<Statement>, symbol_table: &mut HashMap<String, Value>, prefix: Option<String>) -> Result<(), &'static str> {
+fn resolve_macros(
+    input: &mut [Statement],
+    symbol_table: &mut HashMap<String, Value>,
+    prefix: Option<String>,
+) -> Result<(), &'static str> {
     for stmt in input.iter_mut() {
         match stmt {
             Statement::Value(value) => {
                 resolve_macro(value, symbol_table, prefix.clone())?;
             }
             Statement::Section { id, statements } => {
-                resolve_macros(statements, symbol_table, if let Some(prefix) = prefix.as_ref() {
-                    Some(format!("{}.{}", prefix, id))
-                } else {
-                    Some(id.clone())
-                })?;
+                resolve_macros(
+                    statements,
+                    symbol_table,
+                    if let Some(prefix) = prefix.as_ref() {
+                        Some(format!("{}.{}", prefix, id))
+                    } else {
+                        Some(id.clone())
+                    },
+                )?;
             }
-            Statement::Block { id, labels, statements, .. } => {
-                let mut new_labels = labels.clone();
-                resolve_macros(statements, symbol_table, if let Some(prefix) = prefix.as_ref() {
-                    let mut items = vec![prefix.clone(), id.clone()];
-                    items.append(&mut new_labels);
-                    Some(items.join("."))
-                } else {
-                    let mut items = vec![id.clone()];
-                    items.append(&mut new_labels);
-                    Some(items.join("."))
-                })?;
-            }
-            Statement::Assignment {
-                label, value
+            Statement::Block {
+                id,
+                labels,
+                statements,
+                ..
             } => {
-                resolve_macro(value, symbol_table, if let Some(prefix) = prefix.as_ref() {
-                    Some(format!("{}.{}", prefix, label))
-                } else {
-                    Some(label.clone())
-                })?;
+                let mut new_labels = labels.clone();
+                resolve_macros(
+                    statements,
+                    symbol_table,
+                    if let Some(prefix) = prefix.as_ref() {
+                        let mut items = vec![prefix.clone(), id.clone()];
+                        items.append(&mut new_labels);
+                        Some(items.join("."))
+                    } else {
+                        let mut items = vec![id.clone()];
+                        items.append(&mut new_labels);
+                        Some(items.join("."))
+                    },
+                )?;
+            }
+            Statement::Assignment { label, value } => {
+                resolve_macro(
+                    value,
+                    symbol_table,
+                    if let Some(prefix) = prefix.as_ref() {
+                        Some(format!("{}.{}", prefix, label))
+                    } else {
+                        Some(label.clone())
+                    },
+                )?;
             }
             Statement::Control { label, value } => {
-                resolve_macro(value, symbol_table, if let Some(prefix) = prefix.as_ref() {
-                    Some(format!("{}.${}", prefix, label))
-                } else {
-                    Some(format!("${}", label))
-                })?;
+                resolve_macro(
+                    value,
+                    symbol_table,
+                    if let Some(prefix) = prefix.as_ref() {
+                        Some(format!("{}.${}", prefix, label))
+                    } else {
+                        Some(format!("${}", label))
+                    },
+                )?;
             }
             _ => {}
         }
@@ -310,10 +347,12 @@ fn join_statements(input: Vec<Statement>) -> Vec<Statement> {
     let mut last_comment: Option<Statement> = None;
     for stmt in input.iter() {
         match stmt {
-            Statement::Comment(s) => if let Some(Statement::Comment(l)) = last_comment {
-                last_comment = Some(Statement::Comment(vec![l.clone(), s.clone()].join("\n")));
-            } else {
-                last_comment = Some(stmt.clone());
+            Statement::Comment(s) => {
+                if let Some(Statement::Comment(l)) = last_comment {
+                    last_comment = Some(Statement::Comment([l.clone(), s.clone()].join("\n")));
+                } else {
+                    last_comment = Some(stmt.clone());
+                }
             }
             _ => {
                 if let Some(c) = last_comment {
@@ -339,7 +378,7 @@ mod test {
 
     #[test]
     fn test_idl_parsing() {
-        let expected = vec![
+        let _expected = vec![
             crate::Statement::Control {
                 label: "version".to_string(),
                 value: crate::Value::String("1.0".to_string(), None),
@@ -358,33 +397,30 @@ mod test {
                         value: crate::Value::Int(3, None),
                     },
                     crate::Statement::Comment("Documentation".to_string()),
-                ]
+                ],
             },
             crate::Statement::Section {
-                id:  "section2".to_string(),
-                statements: vec![
-                    crate::Statement::Block {
-                        id: "foo".to_string(),
-                        labels: vec!["bar".to_string(), "baz".to_string()],
-                        statements: vec![
-                            crate::Statement::Comment("Documentation".to_string()),
-                            crate::Statement::Block {
-                                id: "nested".to_string(),
-                                labels: vec!["bar".to_string()],
-                                statements: vec![
-                                    crate::Statement::Assignment {
-
-                                        label: "bizness".to_string(),
-                                        value: crate::Value::Float(3.14, None),
-                                    }
-                                ]
-                            }
-                        ],
-                    },
-                ]
-            }
+                id: "section2".to_string(),
+                statements: vec![crate::Statement::Block {
+                    id: "foo".to_string(),
+                    labels: vec!["bar".to_string(), "baz".to_string()],
+                    statements: vec![
+                        crate::Statement::Comment("Documentation".to_string()),
+                        crate::Statement::Block {
+                            id: "nested".to_string(),
+                            labels: vec!["bar".to_string()],
+                            statements: vec![crate::Statement::Assignment {
+                                label: "bizness".to_string(),
+                                value: crate::Value::Float(3.14, None),
+                            }],
+                        },
+                    ],
+                }],
+            },
         ];
-        assert_matches!(super::parser::idl(r#"
+        assert_matches!(
+            super::parser::idl(
+                r#"
         $version = "1.0"
         [section]
         # Documentation
@@ -399,7 +435,11 @@ mod test {
                 'bizness' = 3.14
             }
         }
-        "#).unwrap(), expected);
+        "#
+            )
+            .unwrap(),
+            _expected
+        );
     }
 
     #[test]
@@ -409,88 +449,95 @@ macros = "Hello"
 http "test" "this" {
     value = m'{macros}/whee'
 }
-"#).is_ok());
+"#)
+        .is_ok());
     }
 
     #[test]
     fn test_statement_parsing() {
-        let expected = crate::Statement::Control {
+        let _expected = crate::Statement::Control {
             label: "foo".to_string(),
             value: crate::Value::Int(3, None),
         };
-        assert_matches!(super::parser::statement("$foo = 3").unwrap(), expected);
-        let expected = crate::Statement::Comment("Documentation".to_string());
-        assert_matches!(super::parser::statement("# Documentation").unwrap(), expected);
-        let expected = crate::Statement::Assignment {
+        assert_matches!(super::parser::statement("$foo = 3").unwrap(), _expected);
+        let _expected = crate::Statement::Comment("Documentation".to_string());
+        assert_matches!(
+            super::parser::statement("# Documentation").unwrap(),
+            _expected
+        );
+        let _expected = crate::Statement::Assignment {
             label: "foo".to_string(),
             value: crate::Value::Int(3, None),
         };
-        assert_matches!(super::parser::statement("foo = 3").unwrap(), expected);
-        assert_matches!(super::parser::statement("'foo' = 3").unwrap(), expected);
-        assert_matches!(super::parser::statement("\"foo\" = 3").unwrap(), expected);
-        let expected = crate::Statement::Block {
+        assert_matches!(super::parser::statement("foo = 3").unwrap(), _expected);
+        assert_matches!(super::parser::statement("'foo' = 3").unwrap(), _expected);
+        assert_matches!(super::parser::statement("\"foo\" = 3").unwrap(), _expected);
+        let _expected = crate::Statement::Block {
             id: "foo".to_string(),
             labels: vec!["bar".to_string(), "baz".to_string()],
             statements: vec![crate::Statement::Comment("Documentation".to_string())],
         };
-        assert_matches!(super::parser::statement("foo 'bar' \"baz\" {\n # Documentation\n }").unwrap(), expected);
-        let expected = crate::Statement::Section {
+        assert_matches!(
+            super::parser::statement("foo 'bar' \"baz\" {\n # Documentation\n }").unwrap(),
+            _expected
+        );
+        let _expected = crate::Statement::Section {
             id: "foo".to_string(),
             statements: vec![crate::Statement::Comment("Documentation".to_string())],
         };
-        assert_matches!(super::parser::statement("[foo]\n# Documentation").unwrap(), expected);
+        assert_matches!(
+            super::parser::statement("[foo]\n# Documentation").unwrap(),
+            _expected
+        );
+    }
+
+    macro_rules! value_parse_test {
+        ($code: literal, $value: expr, $extract: ident) => {
+            let left = super::parser::value($code).unwrap();
+            let left = left.$extract().unwrap();
+            assert_eq!(left, $value);
+        };
+
+        (* $code: literal, $value: expr, $extract: ident) => {
+            let left = super::parser::value($code).unwrap();
+            let left = left.$extract().unwrap();
+            assert_eq!(*left, $value);
+        };
+
+        ([ $code: literal, $value: expr, $extract: ident ]) => {
+            let left = super::parser::value($code).unwrap();
+            let array = left.as_array().unwrap();
+            for entry in array {
+                let lvalue = entry.$extract().unwrap();
+                assert_eq!(lvalue, $value);
+            }
+        };
+        ({ $code: literal, $value: expr, $extract: ident }) => {
+            let left = super::parser::value($code).unwrap();
+            let table = left.as_table().unwrap();
+            for (_, value) in table {
+                let lvalue = value.$extract().unwrap();
+                assert_eq!(lvalue, $value);
+            }
+        };
     }
 
     #[test]
     fn test_value_parsing() {
-        assert_matches!(super::parser::value("3").unwrap(), crate::Value::Int(3, None));
-        assert_matches!(super::parser::value("-3").unwrap(), crate::Value::Int(-3, None));
-        assert_matches!(
-            super::parser::value("3.14").unwrap(),
-            crate::Value::Float(3.14, None)
-        );
-        assert_matches!(
-            super::parser::value("-3.14").unwrap(),
-            crate::Value::Float(-3.14, None)
-        );
-        let sample = "foo".to_owned();
-        assert_matches!(
-            super::parser::value("'foo'").unwrap(),
-            crate::Value::String(sample, None)
-        );
-        let sample = sample.clone();
-        assert_matches!(
-            super::parser::value("\"foo\"").unwrap(),
-            crate::Value::String(sample, None)
-        );
-        let sample = "\nfoobar\n";
-        assert_matches!(
-            super::parser::value(
-                r#"'
-        foobar
-        '"#
-            )
-            .unwrap(),
-            crate::Value::String(sample, None)
-        );
-        let sample = vec![crate::Value::Float(3.14, None), crate::Value::Int(5, None)];
-        assert_matches!(
-            super::parser::value("[3.14, 5]").unwrap(),
-            crate::Value::Array(sample, None)
-        );
-        let sample = HashMap::from([
-            ("foo".to_string(), crate::Value::Float(3.14, None)),
-            ("bar".to_string(), crate::Value::String("baz".to_string(), None)),
-        ]);
-        assert_matches!(
-            super::parser::value("{ foo = 3.14, 'bar' = \"baz\" }").unwrap(),
-            crate::Value::Table(sample, None)
-        );
+        value_parse_test!("3", 3, as_int);
+        value_parse_test!("-3", -3, as_int);
+        value_parse_test!("3.14", 3.14, as_float);
+        value_parse_test!("-3.14", -3.14, as_float);
+        value_parse_test!(*"'foo'", "foo".to_string(), as_string);
+        value_parse_test!(*"\"foo\"", "foo".to_string(), as_string);
+        value_parse_test!(*"'\nfoobar\n'", "\nfoobar\n".to_string(), as_string);
+        value_parse_test!(["[5, 5, 5]", 5, as_int]);
+        value_parse_test!({"{ foo = 5, 'bar' = 5, \"baz\" = 5 }", 5, as_int });
     }
 
     #[test]
     fn test_full_file() {
-        let expected = vec![
+        let _expected = vec![
             crate::Statement::Control {
                 label: "schema".to_string(),
                 value: crate::Value::String("1.0.0".to_string(), Some("Test".to_string())),
@@ -501,15 +548,15 @@ http "test" "this" {
                     crate::Statement::Comment("Documentation".to_string()),
                     crate::Statement::Assignment {
                         label: "number".to_string(),
-                        value: crate::Value::Int(4, None)
+                        value: crate::Value::Int(4, None),
                     },
                     crate::Statement::Assignment {
                         label: "float".to_string(),
-                        value: crate::Value::Float(3.14, None)
+                        value: crate::Value::Float(3.14, None),
                     },
                     crate::Statement::Assignment {
                         label: "string".to_string(),
-                        value: crate::Value::String("foobar".to_string(), None)
+                        value: crate::Value::String("foobar".to_string(), None),
                     },
                     crate::Statement::Assignment {
                         label: "array".to_string(),
@@ -519,26 +566,32 @@ http "test" "this" {
                                 crate::Value::Int(5, None),
                                 crate::Value::Float(3.14, None),
                                 crate::Value::String("single".to_string(), None),
-                                ], None)
+                            ],
+                            None,
+                        ),
                     },
                     crate::Statement::Assignment {
                         label: "object".to_string(),
-                        value: crate::Value::Table(HashMap::from([
-                            ("foo".to_string(), crate::Value::Bytes(b"binarystring".to_vec(), None)),
-                            ("bar".to_string(), crate::Value::Int(4, None))
-                        ]), None)
+                        value: crate::Value::Table(
+                            HashMap::from([
+                                (
+                                    "foo".to_string(),
+                                    crate::Value::Bytes(b"binarystring".to_vec(), None),
+                                ),
+                                ("bar".to_string(), crate::Value::Int(4, None)),
+                            ]),
+                            None,
+                        ),
                     },
                     crate::Statement::Block {
                         id: "block".to_string(),
                         labels: vec!["block-a".to_string(), "label-a".to_string()],
-                        statements: vec![
-                            crate::Statement::Assignment {
-                                label: "simple".to_string(),
-                                value: crate::Value::String("me".to_string(), None),
-                            }
-                        ]
-                    }
-                ]
+                        statements: vec![crate::Statement::Assignment {
+                            label: "simple".to_string(),
+                            value: crate::Value::String("me".to_string(), None),
+                        }],
+                    },
+                ],
             },
             crate::Statement::Section {
                 id: "section-b".to_string(),
@@ -546,15 +599,15 @@ http "test" "this" {
                     crate::Statement::Comment("Documentation".to_string()),
                     crate::Statement::Assignment {
                         label: "number".to_string(),
-                        value: crate::Value::Int(4, None)
+                        value: crate::Value::Int(4, None),
                     },
                     crate::Statement::Assignment {
                         label: "float".to_string(),
-                        value: crate::Value::Float(3.14, None)
+                        value: crate::Value::Float(3.14, None),
                     },
                     crate::Statement::Assignment {
                         label: "string".to_string(),
-                        value: crate::Value::String("foobar".to_string(), None)
+                        value: crate::Value::String("foobar".to_string(), None),
                     },
                     crate::Statement::Assignment {
                         label: "array".to_string(),
@@ -564,14 +617,22 @@ http "test" "this" {
                                 crate::Value::Int(5, None),
                                 crate::Value::Float(3.14, None),
                                 crate::Value::String("single".to_string(), None),
-                            ], None)
+                            ],
+                            None,
+                        ),
                     },
                     crate::Statement::Assignment {
                         label: "object".to_string(),
-                        value: crate::Value::Table(HashMap::from([
-                            ("foo".to_string(), crate::Value::Bytes(b"binarystring".to_vec(), None)),
-                            ("bar".to_string(), crate::Value::Int(4, None))
-                        ]), None)
+                        value: crate::Value::Table(
+                            HashMap::from([
+                                (
+                                    "foo".to_string(),
+                                    crate::Value::Bytes(b"binarystring".to_vec(), None),
+                                ),
+                                ("bar".to_string(), crate::Value::Int(4, None)),
+                            ]),
+                            None,
+                        ),
                     },
                     crate::Statement::Block {
                         id: "block".to_string(),
@@ -584,14 +645,14 @@ http "test" "this" {
                             crate::Statement::Assignment {
                                 label: "replacement".to_string(),
                                 value: crate::Value::Float(3.14, None),
-                            }
-                        ]
-                    }
-                ]
-            }
+                            },
+                        ],
+                    },
+                ],
+            },
         ];
         let config_str = std::fs::read_to_string("example.bml").unwrap();
         let config = super::parser::idl(config_str.as_str()).unwrap();
-        assert_matches!(config, expected);
+        assert_matches!(config, _expected);
     }
 }

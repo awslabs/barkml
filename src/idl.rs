@@ -1,4 +1,3 @@
-use crate::statement::Statement;
 use crate::value::Value;
 use base64::Engine;
 use peg::{self, str::LineCol};
@@ -94,52 +93,50 @@ peg::parser! {
             v
         }
 
-        rule value_stmt() -> Statement
-            = v:value() { Statement::Value(v) }
 
-        rule comment() -> Statement
-            = "#" sp() s:$(text_no_nl()*) { Statement::Comment(s.to_string()) }
+        rule comment() -> Value
+            = "#" sp() s:$(text_no_nl()*) { Value::Comment(s.to_string()) }
 
-        rule control() -> Statement
+        rule control() -> Value
             = "$" l:ident_string() ws()? "=" ws()? v:value() {
-            Statement::Control {
+            Value::Control {
                 label: l,
-                value: v,
+                value: Box::new(v),
             }
         }
 
-        rule assignment() -> Statement
+        rule assignment() -> Value
             = l:(double_string() / line_string() / ident_string()) ws()? "=" ws()? v:value() {
-            Statement::Assignment {
+            Value::Assignment {
                 label: l,
-                value: v,
+                value: Box::new(v),
             }
         }
 
-        rule block() -> Statement
+        rule block() -> Value
             = id:(ident_string()) ws()? labels:((double_string() / line_string()) ** ws()) ws()? "{" ws()? s:(statement_no_section() ** ws()) ws()? "}" {
-            Statement::Block {
+            Value::Block {
                 id,
                 labels,
                 statements: s,
             }
         }
 
-        rule section() -> Statement
+        rule section() -> Value
             = "[" id:(ident_string() / double_string() / line_string()) "]" nl() s:(statement_no_section() ** ws()) {
-            Statement::Section {
+            Value::Section {
                 id,
                 statements: s,
             }
         }
 
-        rule statement_no_section() -> Statement
-            = c:(comment() / control() / assignment() / block() / value_stmt() ) { c }
+        rule statement_no_section() -> Value
+            = c:(comment() / control() / assignment() / block() / value() ) { c }
 
-        pub(crate) rule statement() -> Statement
-            = c:(comment() / section() / control() / assignment() / block() / value_stmt() ) { c }
+        pub(crate) rule statement() -> Value
+            = c:(comment() / section() / control() / assignment() / block() / value() ) { c }
 
-        pub rule idl() -> Vec<Statement> = ws()? s:(statement() ** ws()) ws()? {?
+        pub rule idl() -> Vec<Value> = ws()? s:(statement() ** ws()) ws()? {?
             let mut adjust_sections = join_statements(s);
             resolve_macros(adjust_sections.as_mut_slice(), &mut HashMap::new(), None)?;
             Ok(adjust_sections)
@@ -147,7 +144,7 @@ peg::parser! {
     }
 }
 
-pub fn from_str(input: &str) -> Result<Vec<Statement>, peg::error::ParseError<LineCol>> {
+pub fn from_str(input: &str) -> Result<Vec<Value>, peg::error::ParseError<LineCol>> {
     parser::idl(input)
 }
 
@@ -273,16 +270,13 @@ fn resolve_macro(
 }
 
 fn resolve_macros(
-    input: &mut [Statement],
+    input: &mut [Value],
     symbol_table: &mut HashMap<String, Value>,
     prefix: Option<String>,
 ) -> Result<(), &'static str> {
     for stmt in input.iter_mut() {
         match stmt {
-            Statement::Value(value) => {
-                resolve_macro(value, symbol_table, prefix.clone())?;
-            }
-            Statement::Section { id, statements } => {
+            Value::Section { id, statements } => {
                 resolve_macros(
                     statements,
                     symbol_table,
@@ -293,7 +287,7 @@ fn resolve_macros(
                     },
                 )?;
             }
-            Statement::Block {
+            Value::Block {
                 id,
                 labels,
                 statements,
@@ -314,7 +308,7 @@ fn resolve_macros(
                     },
                 )?;
             }
-            Statement::Assignment { label, value } => {
+            Value::Assignment { label, value } => {
                 resolve_macro(
                     value,
                     symbol_table,
@@ -325,7 +319,7 @@ fn resolve_macros(
                     },
                 )?;
             }
-            Statement::Control { label, value } => {
+            Value::Control { label, value } => {
                 resolve_macro(
                     value,
                     symbol_table,
@@ -336,20 +330,22 @@ fn resolve_macros(
                     },
                 )?;
             }
-            _ => {}
+            value => {
+                resolve_macro(value, symbol_table, prefix.clone())?;
+            }
         }
     }
     Ok(())
 }
 
-fn join_statements(input: Vec<Statement>) -> Vec<Statement> {
+fn join_statements(input: Vec<Value>) -> Vec<Value> {
     let mut output = Vec::new();
-    let mut last_comment: Option<Statement> = None;
+    let mut last_comment: Option<Value> = None;
     for stmt in input.iter() {
         match stmt {
-            Statement::Comment(s) => {
-                if let Some(Statement::Comment(l)) = last_comment {
-                    last_comment = Some(Statement::Comment([l.clone(), s.clone()].join("\n")));
+            Value::Comment(s) => {
+                if let Some(Value::Comment(l)) = last_comment {
+                    last_comment = Some(Value::Comment([l.clone(), s.clone()].join("\n")));
                 } else {
                     last_comment = Some(stmt.clone());
                 }
@@ -379,39 +375,39 @@ mod test {
     #[test]
     fn test_idl_parsing() {
         let _expected = vec![
-            crate::Statement::Control {
+            crate::Value::Control {
                 label: "version".to_string(),
-                value: crate::Value::String("1.0".to_string(), None),
+                value: Box::new(crate::Value::String("1.0".to_string(), None)),
             },
-            crate::Statement::Section {
+            crate::Value::Section {
                 id: "section".to_string(),
                 statements: vec![
-                    crate::Statement::Comment("Documentation".to_string()),
-                    crate::Statement::Control {
+                    crate::Value::Comment("Documentation".to_string()),
+                    crate::Value::Control {
                         label: "foo".to_string(),
-                        value: crate::Value::Int(3, None),
+                        value: Box::new(crate::Value::Int(3, None)),
                     },
-                    crate::Statement::Comment("Documentation".to_string()),
-                    crate::Statement::Assignment {
+                    crate::Value::Comment("Documentation".to_string()),
+                    crate::Value::Assignment {
                         label: "foo".to_string(),
-                        value: crate::Value::Int(3, None),
+                        value: Box::new(crate::Value::Int(3, None)),
                     },
-                    crate::Statement::Comment("Documentation".to_string()),
+                    crate::Value::Comment("Documentation".to_string()),
                 ],
             },
-            crate::Statement::Section {
+            crate::Value::Section {
                 id: "section2".to_string(),
-                statements: vec![crate::Statement::Block {
+                statements: vec![crate::Value::Block {
                     id: "foo".to_string(),
                     labels: vec!["bar".to_string(), "baz".to_string()],
                     statements: vec![
-                        crate::Statement::Comment("Documentation".to_string()),
-                        crate::Statement::Block {
+                        crate::Value::Comment("Documentation".to_string()),
+                        crate::Value::Block {
                             id: "nested".to_string(),
                             labels: vec!["bar".to_string()],
-                            statements: vec![crate::Statement::Assignment {
+                            statements: vec![crate::Value::Assignment {
                                 label: "bizness".to_string(),
-                                value: crate::Value::Float(3.14, None),
+                                value: Box::new(crate::Value::Float(3.14, None)),
                             }],
                         },
                     ],
@@ -455,35 +451,35 @@ http "test" "this" {
 
     #[test]
     fn test_statement_parsing() {
-        let _expected = crate::Statement::Control {
+        let _expected = crate::Value::Control {
             label: "foo".to_string(),
-            value: crate::Value::Int(3, None),
+            value: Box::new(crate::Value::Int(3, None)),
         };
         assert_matches!(super::parser::statement("$foo = 3").unwrap(), _expected);
-        let _expected = crate::Statement::Comment("Documentation".to_string());
+        let _expected = crate::Value::Comment("Documentation".to_string());
         assert_matches!(
             super::parser::statement("# Documentation").unwrap(),
             _expected
         );
-        let _expected = crate::Statement::Assignment {
+        let _expected = crate::Value::Assignment {
             label: "foo".to_string(),
-            value: crate::Value::Int(3, None),
+            value: Box::new(crate::Value::Int(3, None)),
         };
         assert_matches!(super::parser::statement("foo = 3").unwrap(), _expected);
         assert_matches!(super::parser::statement("'foo' = 3").unwrap(), _expected);
         assert_matches!(super::parser::statement("\"foo\" = 3").unwrap(), _expected);
-        let _expected = crate::Statement::Block {
+        let _expected = crate::Value::Block {
             id: "foo".to_string(),
             labels: vec!["bar".to_string(), "baz".to_string()],
-            statements: vec![crate::Statement::Comment("Documentation".to_string())],
+            statements: vec![crate::Value::Comment("Documentation".to_string())],
         };
         assert_matches!(
             super::parser::statement("foo 'bar' \"baz\" {\n # Documentation\n }").unwrap(),
             _expected
         );
-        let _expected = crate::Statement::Section {
+        let _expected = crate::Value::Section {
             id: "foo".to_string(),
-            statements: vec![crate::Statement::Comment("Documentation".to_string())],
+            statements: vec![crate::Value::Comment("Documentation".to_string())],
         };
         assert_matches!(
             super::parser::statement("[foo]\n# Documentation").unwrap(),
@@ -538,29 +534,32 @@ http "test" "this" {
     #[test]
     fn test_full_file() {
         let _expected = vec![
-            crate::Statement::Control {
+            crate::Value::Control {
                 label: "schema".to_string(),
-                value: crate::Value::String("1.0.0".to_string(), Some("Test".to_string())),
+                value: Box::new(crate::Value::String(
+                    "1.0.0".to_string(),
+                    Some("Test".to_string()),
+                )),
             },
-            crate::Statement::Section {
+            crate::Value::Section {
                 id: "section-a".to_string(),
                 statements: vec![
-                    crate::Statement::Comment("Documentation".to_string()),
-                    crate::Statement::Assignment {
+                    crate::Value::Comment("Documentation".to_string()),
+                    crate::Value::Assignment {
                         label: "number".to_string(),
-                        value: crate::Value::Int(4, None),
+                        value: Box::new(crate::Value::Int(4, None)),
                     },
-                    crate::Statement::Assignment {
+                    crate::Value::Assignment {
                         label: "float".to_string(),
-                        value: crate::Value::Float(3.14, None),
+                        value: Box::new(crate::Value::Float(3.14, None)),
                     },
-                    crate::Statement::Assignment {
+                    crate::Value::Assignment {
                         label: "string".to_string(),
-                        value: crate::Value::String("foobar".to_string(), None),
+                        value: Box::new(crate::Value::String("foobar".to_string(), None)),
                     },
-                    crate::Statement::Assignment {
+                    crate::Value::Assignment {
                         label: "array".to_string(),
-                        value: crate::Value::Array(
+                        value: Box::new(crate::Value::Array(
                             vec![
                                 crate::Value::String("hello".to_string(), None),
                                 crate::Value::Int(5, None),
@@ -568,11 +567,11 @@ http "test" "this" {
                                 crate::Value::String("single".to_string(), None),
                             ],
                             None,
-                        ),
+                        )),
                     },
-                    crate::Statement::Assignment {
+                    crate::Value::Assignment {
                         label: "object".to_string(),
-                        value: crate::Value::Table(
+                        value: Box::new(crate::Value::Table(
                             HashMap::from([
                                 (
                                     "foo".to_string(),
@@ -581,37 +580,37 @@ http "test" "this" {
                                 ("bar".to_string(), crate::Value::Int(4, None)),
                             ]),
                             None,
-                        ),
+                        )),
                     },
-                    crate::Statement::Block {
+                    crate::Value::Block {
                         id: "block".to_string(),
                         labels: vec!["block-a".to_string(), "label-a".to_string()],
-                        statements: vec![crate::Statement::Assignment {
+                        statements: vec![crate::Value::Assignment {
                             label: "simple".to_string(),
-                            value: crate::Value::String("me".to_string(), None),
+                            value: Box::new(crate::Value::String("me".to_string(), None)),
                         }],
                     },
                 ],
             },
-            crate::Statement::Section {
+            crate::Value::Section {
                 id: "section-b".to_string(),
                 statements: vec![
-                    crate::Statement::Comment("Documentation".to_string()),
-                    crate::Statement::Assignment {
+                    crate::Value::Comment("Documentation".to_string()),
+                    crate::Value::Assignment {
                         label: "number".to_string(),
-                        value: crate::Value::Int(4, None),
+                        value: Box::new(crate::Value::Int(4, None)),
                     },
-                    crate::Statement::Assignment {
+                    crate::Value::Assignment {
                         label: "float".to_string(),
-                        value: crate::Value::Float(3.14, None),
+                        value: Box::new(crate::Value::Float(3.14, None)),
                     },
-                    crate::Statement::Assignment {
+                    crate::Value::Assignment {
                         label: "string".to_string(),
-                        value: crate::Value::String("foobar".to_string(), None),
+                        value: Box::new(crate::Value::String("foobar".to_string(), None)),
                     },
-                    crate::Statement::Assignment {
+                    crate::Value::Assignment {
                         label: "array".to_string(),
-                        value: crate::Value::Array(
+                        value: Box::new(crate::Value::Array(
                             vec![
                                 crate::Value::String("hello".to_string(), None),
                                 crate::Value::Int(5, None),
@@ -619,11 +618,11 @@ http "test" "this" {
                                 crate::Value::String("single".to_string(), None),
                             ],
                             None,
-                        ),
+                        )),
                     },
-                    crate::Statement::Assignment {
+                    crate::Value::Assignment {
                         label: "object".to_string(),
-                        value: crate::Value::Table(
+                        value: Box::new(crate::Value::Table(
                             HashMap::from([
                                 (
                                     "foo".to_string(),
@@ -632,19 +631,22 @@ http "test" "this" {
                                 ("bar".to_string(), crate::Value::Int(4, None)),
                             ]),
                             None,
-                        ),
+                        )),
                     },
-                    crate::Statement::Block {
+                    crate::Value::Block {
                         id: "block".to_string(),
                         labels: vec!["block-a".to_string(), "label-a".to_string()],
                         statements: vec![
-                            crate::Statement::Assignment {
+                            crate::Value::Assignment {
                                 label: "simple".to_string(),
-                                value: crate::Value::String("foobar bar".to_string(), None),
+                                value: Box::new(crate::Value::String(
+                                    "foobar bar".to_string(),
+                                    None,
+                                )),
                             },
-                            crate::Statement::Assignment {
+                            crate::Value::Assignment {
                                 label: "replacement".to_string(),
-                                value: crate::Value::Float(3.14, None),
+                                value: Box::new(crate::Value::Float(3.14, None)),
                             },
                         ],
                     },

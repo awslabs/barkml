@@ -1,10 +1,9 @@
 pub mod error;
 mod idl;
-mod statement;
+pub mod ser;
 mod value;
 
 pub use idl::from_str;
-pub use statement::*;
 pub use value::*;
 
 #[cfg(feature = "binary")]
@@ -14,19 +13,19 @@ use snafu::ResultExt;
 
 #[cfg(feature = "binary")]
 /// Decode a barkml set of statements that are encoded in msgpack
-pub fn decode(input: &[u8]) -> error::Result<Vec<Statement>> {
+pub fn decode(input: &[u8]) -> error::Result<Vec<Value>> {
     let parent = MsgPack::parse(input).context(error::MsgPackEncodedSnafu)?;
     let children = parent.as_array().context(error::MsgPackNotExpectedSnafu)?;
     let mut stmts = Vec::new();
     for entry in children.iter() {
-        stmts.push(Statement::from_binary(entry.clone())?);
+        stmts.push(Value::from_binary(entry.clone())?);
     }
     Ok(stmts)
 }
 
 #[cfg(feature = "binary")]
 /// Encode a barkml set of statements to msgpack
-pub fn encode(input: &[Statement]) -> Vec<u8> {
+pub fn encode(input: &[Value]) -> Vec<u8> {
     let packed = MsgPack::Array(input.iter().map(|x| x.to_binary()).collect());
     packed.encode()
 }

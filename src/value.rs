@@ -2,12 +2,30 @@ use crate::error::{self, Result};
 use base64::Engine;
 #[cfg(feature = "binary")]
 use msgpack_simple::{Extension, MapElement, MsgPack};
-use snafu::{ensure, ResultExt};
-
+use snafu::{ensure, OptionExt, ResultExt};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub enum Value {
+    Comment(String),
+    Control {
+        label: String,
+        value: Box<Self>,
+    },
+    Assignment {
+        label: String,
+        value: Box<Self>,
+    },
+    Block {
+        id: String,
+        labels: Vec<String>,
+        statements: Vec<Self>,
+    },
+    Section {
+        id: String,
+        statements: Vec<Self>,
+    },
+
     Table(HashMap<String, Self>, Option<String>),
     Array(Vec<Self>, Option<String>),
     Macro(String, Option<String>, bool),
@@ -21,6 +39,44 @@ pub enum Value {
 }
 
 impl Value {
+    pub fn as_section(&self) -> Option<(&String, &Vec<Value>)> {
+        match self {
+            Self::Section { id, statements } => Some((id, statements)),
+            _ => None,
+        }
+    }
+
+    pub fn as_block(&self) -> Option<(&String, &Vec<String>, &Vec<Value>)> {
+        match self {
+            Self::Block {
+                id,
+                labels,
+                statements,
+            } => Some((id, labels, statements)),
+            _ => None,
+        }
+    }
+
+    pub fn as_assignment(&self) -> Option<(&String, &Value)> {
+        match self {
+            Self::Assignment { label, value } => Some((label, value)),
+            _ => None,
+        }
+    }
+
+    pub fn as_control(&self) -> Option<(&String, &Value)> {
+        match self {
+            Self::Control { label, value } => Some((label, value)),
+            _ => None,
+        }
+    }
+    pub fn as_comment(&self) -> Option<&String> {
+        match self {
+            Self::Comment(value) => Some(value),
+            _ => None,
+        }
+    }
+
     pub fn as_table(&self) -> Option<&HashMap<String, Self>> {
         match self {
             Self::Table(value, ..) => Some(value),
@@ -100,6 +156,7 @@ impl Value {
             Self::Bool(_, ref mut label) => *label = Some(value.to_owned()),
             Self::Label(ref mut label) => *label = value.to_owned(),
             Self::Null(ref mut label) => *label = Some(value.to_owned()),
+            _ => {}
         }
     }
 
@@ -121,6 +178,7 @@ impl Value {
             Self::Null(_) => "null".to_owned(),
             Self::Macro(..) => self.to_string(),
             Self::String(value, _) => value.clone(),
+            _ => String::default(),
         }
     }
 
@@ -130,6 +188,85 @@ impl Value {
             .as_extension()
             .context(error::MsgPackNotExpectedSnafu)?;
         match ext.type_id {
+            0 => {
+                let value =
+                    MsgPack::parse(ext.value.as_slice()).context(error::MsgPackEncodedSnafu)?;
+                let comment = value.as_string().context(error::MsgPackNotExpectedSnafu)?;
+                Ok(Self::Comment(comment))
+            }
+            1 => {
+                let value =
+                    MsgPack::parse(ext.value.as_slice()).context(error::MsgPackEncodedSnafu)?;
+                let entries = value.as_map().context(error::MsgPackNotExpectedSnafu)?;
+                let label = Self::find_entry(&entries, "label")?
+                    .as_string()
+                    .context(error::MsgPackNotExpectedSnafu)?;
+                let value = Value::from_binary(Self::find_entry(&entries, "value")?)?;
+                Ok(Self::Control {
+                    label,
+                    value: Box::new(value),
+                })
+            }
+            2 => {
+                let value =
+                    MsgPack::parse(ext.value.as_slice()).context(error::MsgPackEncodedSnafu)?;
+                let entries = value.as_map().context(error::MsgPackNotExpectedSnafu)?;
+                let label = Self::find_entry(&entries, "label")?
+                    .as_string()
+                    .context(error::MsgPackNotExpectedSnafu)?;
+                let value = Value::from_binary(Self::find_entry(&entries, "value")?)?;
+                Ok(Self::Assignment {
+                    label,
+                    value: Box::new(value),
+                })
+            }
+            3 => {
+                let value =
+                    MsgPack::parse(ext.value.as_slice()).context(error::MsgPackEncodedSnafu)?;
+                let entries = value.as_map().context(error::MsgPackNotExpectedSnafu)?;
+                let id = Self::find_entry(&entries, "id")?
+                    .as_string()
+                    .context(error::MsgPackNotExpectedSnafu)?;
+                let labels: Vec<String> = Self::find_entry(&entries, "labels")?
+                    .as_array()
+                    .context(error::MsgPackNotExpectedSnafu)?
+                    .iter()
+                    .map(|x| {
+                        x.clone()
+                            .as_string()
+                            .context(error::MsgPackNotExpectedSnafu)
+                    })
+                    .flatten()
+                    .collect();
+                let statements: Vec<Value> = Self::find_entry(&entries, "statements")?
+                    .as_array()
+                    .context(error::MsgPackNotExpectedSnafu)?
+                    .iter()
+                    .map(|x| Self::from_binary(x.clone()))
+                    .flatten()
+                    .collect();
+                Ok(Self::Block {
+                    id,
+                    labels,
+                    statements,
+                })
+            }
+            4 => {
+                let value =
+                    MsgPack::parse(ext.value.as_slice()).context(error::MsgPackEncodedSnafu)?;
+                let entries = value.as_map().context(error::MsgPackNotExpectedSnafu)?;
+                let id = Self::find_entry(&entries, "id")?
+                    .as_string()
+                    .context(error::MsgPackNotExpectedSnafu)?;
+                let statements: Vec<Value> = Self::find_entry(&entries, "statements")?
+                    .as_array()
+                    .context(error::MsgPackNotExpectedSnafu)?
+                    .iter()
+                    .map(|x| Self::from_binary(x.clone()))
+                    .flatten()
+                    .collect();
+                Ok(Self::Section { id, statements })
+            }
             100 => {
                 let (label, content) = Self::extract(&ext)?;
                 let content = content.as_map().context(error::MsgPackNotExpectedSnafu)?;
@@ -201,6 +338,24 @@ impl Value {
     }
 
     #[cfg(feature = "binary")]
+    fn find_entry(input: &Vec<MapElement>, key: &str) -> Result<MsgPack> {
+        input
+            .iter()
+            .find_map(|x| {
+                if let Ok(label) = x.key.clone().as_string() {
+                    if label == key {
+                        Some(x.value.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .context(error::MsgPackUnsupportedSnafu)
+    }
+
+    #[cfg(feature = "binary")]
     fn extract(entry: &Extension) -> Result<(Option<String>, MsgPack)> {
         let table =
             MsgPack::parse(entry.value.clone().as_slice()).context(error::MsgPackEncodedSnafu)?;
@@ -237,6 +392,69 @@ impl Value {
     #[cfg(feature = "binary")]
     pub fn to_binary(&self) -> msgpack_simple::MsgPack {
         let (type_id, value) = match self {
+            Self::Comment(value) => (0, MsgPack::String(value.clone())),
+            Self::Control { label, value } => (
+                1,
+                MsgPack::Map(vec![
+                    MapElement {
+                        key: MsgPack::String("label".to_string()),
+                        value: MsgPack::String(label.clone()),
+                    },
+                    MapElement {
+                        key: MsgPack::String("value".to_string()),
+                        value: value.to_binary(),
+                    },
+                ]),
+            ),
+            Self::Assignment { label, value } => (
+                2,
+                MsgPack::Map(vec![
+                    MapElement {
+                        key: MsgPack::String("label".to_string()),
+                        value: MsgPack::String(label.clone()),
+                    },
+                    MapElement {
+                        key: MsgPack::String("value".to_string()),
+                        value: value.to_binary(),
+                    },
+                ]),
+            ),
+            Self::Block {
+                id,
+                labels,
+                statements,
+            } => (
+                3,
+                MsgPack::Map(vec![
+                    MapElement {
+                        key: MsgPack::String("id".to_string()),
+                        value: MsgPack::String(id.clone()),
+                    },
+                    MapElement {
+                        key: MsgPack::String("labels".to_string()),
+                        value: MsgPack::Array(
+                            labels.iter().map(|x| MsgPack::String(x.clone())).collect(),
+                        ),
+                    },
+                    MapElement {
+                        key: MsgPack::String("statements".to_string()),
+                        value: MsgPack::Array(statements.iter().map(|x| x.to_binary()).collect()),
+                    },
+                ]),
+            ),
+            Self::Section { id, statements } => (
+                4,
+                MsgPack::Map(vec![
+                    MapElement {
+                        key: MsgPack::String("id".to_string()),
+                        value: MsgPack::String(id.clone()),
+                    },
+                    MapElement {
+                        key: MsgPack::String("statements".to_string()),
+                        value: MsgPack::Array(statements.iter().map(|x| x.to_binary()).collect()),
+                    },
+                ]),
+            ),
             Self::Table(data, label) => (
                 100,
                 MsgPack::Map(vec![
@@ -386,6 +604,32 @@ impl Value {
 impl ToString for Value {
     fn to_string(&self) -> String {
         match self {
+            Self::Comment(comment) => format!("# {}", comment),
+            Self::Control { label, value } => format!("${} = {}", label, value.to_string()),
+            Self::Assignment { label, value } => format!("{} = {}", label, value.to_string()),
+            Self::Block {
+                id,
+                labels,
+                statements,
+            } => {
+                let mut s = format!("{} ", id);
+                for label in labels {
+                    s.push_str(&format!("'{}' ", label));
+                }
+                s.push('{');
+                for statement in statements {
+                    s.push_str(&format!("\n\t{}", statement.to_string()));
+                }
+                s.push_str("\n}");
+                s
+            }
+            Self::Section { id, statements } => {
+                let mut s = format!("[{}]", id);
+                for statement in statements {
+                    s.push_str(&format!("\n{}", statement.to_string()));
+                }
+                s
+            }
             Self::Table(map, label) => {
                 let mut s = String::default();
                 if let Some(label) = label {

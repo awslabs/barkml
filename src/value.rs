@@ -6,6 +6,90 @@ use snafu::{ensure, OptionExt, ResultExt};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
+pub enum Int {
+    I8(i8),
+    I16(i16),
+    I32(i32),
+    I64(i64),
+    U8(u8),
+    U16(u16),
+    U32(u32),
+    U64(u64),
+}
+
+macro_rules! variant {
+    ($name: ident, $key: ident, $ret: ident) => {
+        pub fn $name(&self) -> Option<$ret> {
+            match self {
+                Self::$key(data) => Some(*data),
+                _ => None,
+            }
+        }
+    };
+}
+
+impl Int {
+    variant!(as_i8, I8, i8);
+    variant!(as_i16, I16, i16);
+    variant!(as_i32, I32, i32);
+    variant!(as_i64, I64, i64);
+    variant!(as_u8, U8, u8);
+    variant!(as_u16, U16, u16);
+    variant!(as_u32, U32, u32);
+    variant!(as_u64, U64, u64);
+    pub fn as_int(&self) -> i64 {
+        match self {
+            Self::I8(data) => *data as i64,
+            Self::I16(data) => *data as i64,
+            Self::I32(data) => *data as i64,
+            Self::I64(data) => *data,
+            Self::U8(data) => *data as i64,
+            Self::U16(data) => *data as i64,
+            Self::U32(data) => *data as i64,
+            Self::U64(data) => *data as i64,
+        }
+    }
+
+    pub fn to_string(&self) -> String {
+        match self {
+            Self::I8(data) => data.to_string(),
+            Self::I16(data) => data.to_string(),
+            Self::I32(data) => data.to_string(),
+            Self::I64(data) => data.to_string(),
+            Self::U8(data) => data.to_string(),
+            Self::U16(data) => data.to_string(),
+            Self::U32(data) => data.to_string(),
+            Self::U64(data) => data.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Float {
+    F32(f32),
+    F64(f64),
+}
+
+impl Float {
+    variant!(as_f32, F32, f32);
+    variant!(as_f64, F64, f64);
+
+    pub fn as_float(&self) -> f64 {
+        match self {
+            Self::F32(data) => *data as f64,
+            Self::F64(data) => *data,
+        }
+    }
+
+    pub fn to_string(&self) -> String {
+        match self {
+            Self::F32(data) => data.to_string(),
+            Self::F64(data) => data.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum Value {
     Comment(String),
     Control {
@@ -31,11 +115,22 @@ pub enum Value {
     Macro(String, Option<String>, bool),
     String(String, Option<String>),
     Bytes(Vec<u8>, Option<String>),
-    Int(i64, Option<String>),
-    Float(f64, Option<String>),
+    Int(Int, Option<String>),
+    Float(Float, Option<String>),
     Bool(bool, Option<String>),
     Label(String),
     Null(Option<String>),
+}
+
+macro_rules! sized_variant {
+    ($name: ident, $key: ident, $ret: ty) => {
+        pub fn $name(&self) -> Option<$ret> {
+            match self {
+                Self::$key(data, ..) => data.$name(),
+                _ => None,
+            }
+        }
+    };
 }
 
 impl Value {
@@ -114,17 +209,29 @@ impl Value {
 
     pub fn as_int(&self) -> Option<i64> {
         match self {
-            Self::Int(value, ..) => Some(*value),
+            Self::Int(value, ..) => Some(value.as_int()),
             _ => None,
         }
     }
 
+    sized_variant!(as_i8, Int, i8);
+    sized_variant!(as_i16, Int, i16);
+    sized_variant!(as_i32, Int, i32);
+    sized_variant!(as_i64, Int, i64);
+    sized_variant!(as_u8, Int, u8);
+    sized_variant!(as_u16, Int, u16);
+    sized_variant!(as_u32, Int, u32);
+    sized_variant!(as_u64, Int, u64);
+
     pub fn as_float(&self) -> Option<f64> {
         match self {
-            Self::Float(value, ..) => Some(*value),
+            Self::Float(value, ..) => Some(value.as_float()),
             _ => None,
         }
     }
+
+    sized_variant!(as_f32, Float, f32);
+    sized_variant!(as_f64, Float, f64);
 
     pub fn as_bool(&self) -> Option<bool> {
         match self {
@@ -308,12 +415,12 @@ impl Value {
             104 => {
                 let (label, content) = Self::extract(&ext)?;
                 let value = content.as_int().context(error::MsgPackNotExpectedSnafu)?;
-                Ok(Self::Int(value, label))
+                Ok(Self::Int(Int::I64(value), label))
             }
             105 => {
                 let (label, content) = Self::extract(&ext)?;
                 let value = content.as_float().context(error::MsgPackNotExpectedSnafu)?;
-                Ok(Self::Float(value, label))
+                Ok(Self::Float(Float::F64(value), label))
             }
             106 => {
                 let (label, content) = Self::extract(&ext)?;
@@ -538,7 +645,7 @@ impl Value {
                     },
                     MapElement {
                         key: MsgPack::Int(1),
-                        value: MsgPack::Int(*data),
+                        value: MsgPack::Int(data.as_int()),
                     },
                 ]),
             ),
@@ -554,7 +661,7 @@ impl Value {
                     },
                     MapElement {
                         key: MsgPack::Int(0),
-                        value: MsgPack::Float(*data),
+                        value: MsgPack::Float(data.as_float()),
                     },
                 ]),
             ),
@@ -698,7 +805,7 @@ impl ToString for Value {
                 if let Some(label) = label {
                     s += format!("!{} ", label).as_str();
                 }
-                s += format!("{}", int).as_str();
+                s += format!("{}", int.to_string()).as_str();
                 s
             }
             Self::Float(float, label) => {
@@ -706,7 +813,7 @@ impl ToString for Value {
                 if let Some(label) = label {
                     s += format!("!{} ", label).as_str();
                 }
-                s += format!("{}", float).as_str();
+                s += format!("{}", float.to_string()).as_str();
                 s
             }
             Self::Bool(boolean, label) => {

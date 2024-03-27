@@ -1,12 +1,12 @@
-use crate::error;
-use serde::{Serialize, Serializer};
+// use crate::{error, Value};
+// use serde::{Serialize, Serializer};
 //
 // pub struct BarkSerializer {
 //     lines: Vec<String>,
 // }
 //
 // impl<'a> Serializer for &'a mut BarkSerializer {
-//     type Ok = &'a str;
+//     type Ok = Value;
 //     type Error = error::Error;
 //     type SerializeSeq = ();
 //     type SerializeTuple = ();
@@ -17,11 +17,11 @@ use serde::{Serialize, Serializer};
 //     type SerializeStructVariant = ();
 //
 //     fn serialize_bool(self, v: bool) -> Result<Self::Ok, Self::Error> {
-//         todo!()
+//         Ok(Value::Bool(v, None))
 //     }
 //
 //     fn serialize_i8(self, v: i8) -> Result<Self::Ok, Self::Error> {
-//         todo!()
+//         Ok(Value::Int(v as i64, None))
 //     }
 //
 //     fn serialize_i16(self, v: i16) -> Result<Self::Ok, Self::Error> {

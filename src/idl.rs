@@ -1,4 +1,5 @@
 use crate::value::Value;
+use crate::{Float, Int};
 use base64::Engine;
 use peg::{self, str::LineCol};
 use std::{cmp::max, collections::HashMap};
@@ -28,14 +29,48 @@ peg::parser! {
             = b:(positive() / negative()) { b }
         rule bool_value() -> Value
             = l:prefix()? b:boolean() { Value::Bool(b, l) }
-        rule int() -> i64
-            = n:$("-"? ['0'..='9']+) {? n.parse().or(Err("i64")) }
-        rule float() -> f64
-            = n:$("-"? ['0'..='9']+ "." ['0'..='9']* (['e' | 'E'] ['+' | '-']? ['0'..='9']+)?) {? n.parse().or(Err("f64")) }
+
+        // Integer Types
+        rule int() -> Int
+            = n:$("-"? ['0'..='9']+) { Int::I64(n.parse().or(Err("i64")).unwrap()) }
+        rule i8() -> Int
+            = n:$("-"? ['0'..='9']+) "i8" { Int::I8(n.parse().or(Err("i8")).unwrap()) }
+        rule i16() -> Int
+            = n:$("-"? ['0'..='9']+) "i16" { Int::I16(n.parse().or(Err("i16")).unwrap()) }
+        rule i32() -> Int
+            = n:$("-"? ['0'..='9']+) "i32" { Int::I32(n.parse().or(Err("i32")).unwrap()) }
+        rule i64() -> Int
+            = n:$("-"? ['0'..='9']+) "i64" { Int::I64(n.parse().or(Err("i64")).unwrap()) }
+        rule u8() -> Int
+            = n:$(['0'..='9']+) "u8" { Int::U8(n.parse().or(Err("u8")).unwrap()) }
+        rule u16() -> Int
+            = n:$(['0'..='9']+) "u16" { Int::U16(n.parse().or(Err("u16")).unwrap()) }
+        rule u32() -> Int
+            = n:$(['0'..='9']+) "u32" { Int::U32(n.parse().or(Err("u32")).unwrap()) }
+        rule u64() -> Int
+            = n:$(['0'..='9']+) "u64" { Int::U64(n.parse().or(Err("u64")).unwrap()) }
+
+        rule float() -> Float
+            = n:$("-"? ['0'..='9']+ "." ['0'..='9']* (['e' | 'E'] ['+' | '-']? ['0'..='9']+)?) { Float::F64(n.parse().or(Err("f64")).unwrap()) }
+        rule f32() -> Float
+            = n:$("-"? ['0'..='9']+ "." ['0'..='9']* (['e' | 'E'] ['+' | '-']? ['0'..='9']+)?) "f32" { Float::F32(n.parse().or(Err("f32")).unwrap()) }
+        rule f64() -> Float
+            = n:$("-"? ['0'..='9']+ "." ['0'..='9']* (['e' | 'E'] ['+' | '-']? ['0'..='9']+)?) "f64" { Float::F64(n.parse().or(Err("f64")).unwrap()) }
+
         rule int_value() -> Value
-            = l:prefix()? n:int() { Value::Int(n, l) }
+            = l:prefix()? n:(
+            int() /
+            i8() /
+            i16() /
+            i32() /
+            i64() /
+            u8() /
+            u16() /
+            u32() /
+            u64()
+        ) { Value::Int(n, l) }
         rule float_value() -> Value
-            = l:prefix()? n:float() { Value::Float(n, l) }
+            = l:prefix()? n:(float() / f32() / f64() ) { Value::Float(n, l) }
 
         rule macro_string() -> String
             = "m'" s:$(['\0'..='\u{0026}' | '\u{0028}'..='\u{10ffff}']+) "'" {
@@ -367,6 +402,7 @@ fn join_statements(input: Vec<Value>) -> Vec<Value> {
 
 #[cfg(test)]
 mod test {
+    use crate::{Float, Int};
     use assert_matches::assert_matches;
     use std::collections::HashMap;
 
@@ -385,12 +421,12 @@ mod test {
                     crate::Value::Comment("Documentation".to_string()),
                     crate::Value::Control {
                         label: "foo".to_string(),
-                        value: Box::new(crate::Value::Int(3, None)),
+                        value: Box::new(crate::Value::Int(Int::I64(3), None)),
                     },
                     crate::Value::Comment("Documentation".to_string()),
                     crate::Value::Assignment {
                         label: "foo".to_string(),
-                        value: Box::new(crate::Value::Int(3, None)),
+                        value: Box::new(crate::Value::Int(Int::I64(3), None)),
                     },
                     crate::Value::Comment("Documentation".to_string()),
                 ],
@@ -407,7 +443,7 @@ mod test {
                             labels: vec!["bar".to_string()],
                             statements: vec![crate::Value::Assignment {
                                 label: "bizness".to_string(),
-                                value: Box::new(crate::Value::Float(3.14, None)),
+                                value: Box::new(crate::Value::Float(Float::F64(3.14), None)),
                             }],
                         },
                     ],
@@ -453,7 +489,7 @@ http "test" "this" {
     fn test_statement_parsing() {
         let _expected = crate::Value::Control {
             label: "foo".to_string(),
-            value: Box::new(crate::Value::Int(3, None)),
+            value: Box::new(crate::Value::Int(Int::I64(3), None)),
         };
         assert_matches!(super::parser::statement("$foo = 3").unwrap(), _expected);
         let _expected = crate::Value::Comment("Documentation".to_string());
@@ -463,7 +499,7 @@ http "test" "this" {
         );
         let _expected = crate::Value::Assignment {
             label: "foo".to_string(),
-            value: Box::new(crate::Value::Int(3, None)),
+            value: Box::new(crate::Value::Int(Int::I64(3), None)),
         };
         assert_matches!(super::parser::statement("foo = 3").unwrap(), _expected);
         assert_matches!(super::parser::statement("'foo' = 3").unwrap(), _expected);
@@ -547,11 +583,11 @@ http "test" "this" {
                     crate::Value::Comment("Documentation".to_string()),
                     crate::Value::Assignment {
                         label: "number".to_string(),
-                        value: Box::new(crate::Value::Int(4, None)),
+                        value: Box::new(crate::Value::Int(Int::I64(4), None)),
                     },
                     crate::Value::Assignment {
                         label: "float".to_string(),
-                        value: Box::new(crate::Value::Float(3.14, None)),
+                        value: Box::new(crate::Value::Float(Float::F64(3.14), None)),
                     },
                     crate::Value::Assignment {
                         label: "string".to_string(),
@@ -562,8 +598,8 @@ http "test" "this" {
                         value: Box::new(crate::Value::Array(
                             vec![
                                 crate::Value::String("hello".to_string(), None),
-                                crate::Value::Int(5, None),
-                                crate::Value::Float(3.14, None),
+                                crate::Value::Int(Int::I64(5), None),
+                                crate::Value::Float(Float::F64(3.14), None),
                                 crate::Value::String("single".to_string(), None),
                             ],
                             None,
@@ -577,7 +613,7 @@ http "test" "this" {
                                     "foo".to_string(),
                                     crate::Value::Bytes(b"binarystring".to_vec(), None),
                                 ),
-                                ("bar".to_string(), crate::Value::Int(4, None)),
+                                ("bar".to_string(), crate::Value::Int(Int::I64(4), None)),
                             ]),
                             None,
                         )),
@@ -598,11 +634,11 @@ http "test" "this" {
                     crate::Value::Comment("Documentation".to_string()),
                     crate::Value::Assignment {
                         label: "number".to_string(),
-                        value: Box::new(crate::Value::Int(4, None)),
+                        value: Box::new(crate::Value::Int(Int::I64(4), None)),
                     },
                     crate::Value::Assignment {
                         label: "float".to_string(),
-                        value: Box::new(crate::Value::Float(3.14, None)),
+                        value: Box::new(crate::Value::Float(Float::F64(3.14), None)),
                     },
                     crate::Value::Assignment {
                         label: "string".to_string(),
@@ -613,8 +649,8 @@ http "test" "this" {
                         value: Box::new(crate::Value::Array(
                             vec![
                                 crate::Value::String("hello".to_string(), None),
-                                crate::Value::Int(5, None),
-                                crate::Value::Float(3.14, None),
+                                crate::Value::Int(Int::I64(5), None),
+                                crate::Value::Float(Float::F64(3.14), None),
                                 crate::Value::String("single".to_string(), None),
                             ],
                             None,
@@ -628,7 +664,7 @@ http "test" "this" {
                                     "foo".to_string(),
                                     crate::Value::Bytes(b"binarystring".to_vec(), None),
                                 ),
-                                ("bar".to_string(), crate::Value::Int(4, None)),
+                                ("bar".to_string(), crate::Value::Int(Int::I64(4), None)),
                             ]),
                             None,
                         )),
@@ -646,7 +682,7 @@ http "test" "this" {
                             },
                             crate::Value::Assignment {
                                 label: "replacement".to_string(),
-                                value: Box::new(crate::Value::Float(3.14, None)),
+                                value: Box::new(crate::Value::Float(Float::F64(3.14), None)),
                             },
                         ],
                     },

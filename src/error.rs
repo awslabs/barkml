@@ -1,4 +1,5 @@
 use snafu::Snafu;
+use std::fmt::Display;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -19,4 +20,13 @@ pub enum Error {
     #[cfg(feature = "binary")]
     #[snafu(display("Unsupported encoded value in msgpack data"))]
     MsgPackUnsupported,
+}
+
+impl serde::ser::Error for Error {
+    fn custom<T>(msg: T) -> Self
+    where
+        T: Display,
+    {
+        todo!()
+    }
 }

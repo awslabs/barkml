@@ -1,7 +1,8 @@
 use crate::value::Value;
 use crate::{Float, Int};
 use base64::Engine;
-use peg::{self, str::LineCol};
+use peg;
+use snafu::ResultExt;
 use std::{cmp::max, collections::HashMap};
 
 peg::parser! {
@@ -179,8 +180,12 @@ peg::parser! {
     }
 }
 
-pub fn from_str(input: &str) -> Result<Vec<Value>, peg::error::ParseError<LineCol>> {
-    parser::idl(input)
+pub fn from_str_flat(input: &str) -> crate::error::Result<Vec<Value>> {
+    parser::idl(input).context(crate::error::ParseSnafu)
+}
+
+pub fn from_str(input: &str) -> crate::error::Result<Value> {
+    Ok(Value::Module(from_str_flat(input)?))
 }
 
 fn macrotize(
@@ -527,7 +532,7 @@ http "test" "this" {
         ($code: literal, $value: expr, $extract: ident) => {
             let left = super::parser::value($code).unwrap();
             let left = left.$extract().unwrap();
-            assert_eq!(left, $value);
+            assert_eq!(*left, $value);
         };
 
         (* $code: literal, $value: expr, $extract: ident) => {
@@ -541,7 +546,7 @@ http "test" "this" {
             let array = left.as_array().unwrap();
             for entry in array {
                 let lvalue = entry.$extract().unwrap();
-                assert_eq!(lvalue, $value);
+                assert_eq!(*lvalue, $value);
             }
         };
         ({ $code: literal, $value: expr, $extract: ident }) => {
@@ -549,22 +554,22 @@ http "test" "this" {
             let table = left.as_table().unwrap();
             for (_, value) in table {
                 let lvalue = value.$extract().unwrap();
-                assert_eq!(lvalue, $value);
+                assert_eq!(*lvalue, $value);
             }
         };
     }
 
     #[test]
     fn test_value_parsing() {
-        value_parse_test!("3", 3, as_int);
-        value_parse_test!("-3", -3, as_int);
-        value_parse_test!("3.14", 3.14, as_float);
-        value_parse_test!("-3.14", -3.14, as_float);
+        value_parse_test!("3", 3, as_i64);
+        value_parse_test!("-3", -3, as_i64);
+        value_parse_test!("3.14", 3.14, as_f64);
+        value_parse_test!("-3.14", -3.14, as_f64);
         value_parse_test!(*"'foo'", "foo".to_string(), as_string);
         value_parse_test!(*"\"foo\"", "foo".to_string(), as_string);
         value_parse_test!(*"'\nfoobar\n'", "\nfoobar\n".to_string(), as_string);
-        value_parse_test!(["[5, 5, 5]", 5, as_int]);
-        value_parse_test!({"{ foo = 5, 'bar' = 5, \"baz\" = 5 }", 5, as_int });
+        value_parse_test!(["[5, 5, 5]", 5, as_i64]);
+        value_parse_test!({"{ foo = 5, 'bar' = 5, \"baz\" = 5 }", 5, as_i64 });
     }
 
     #[test]

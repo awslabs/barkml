@@ -5,6 +5,8 @@ use msgpack_simple::{Extension, MapElement, MsgPack};
 use snafu::{ensure, OptionExt, ResultExt};
 use std::collections::HashMap;
 
+/// Stores integer values in their appropriate
+/// precisioned type.
 #[derive(Debug, Clone)]
 pub enum Int {
     I8(i8),
@@ -17,11 +19,19 @@ pub enum Int {
     U64(u64),
 }
 
+/// Helps define access methods for Int and Float
 macro_rules! variant {
-    ($name: ident, $key: ident, $ret: ident) => {
-        pub fn $name(&self) -> Option<$ret> {
+    ($name: ident, $mut_name: ident, $key: ident, $ret: ident) => {
+        pub fn $name(&self) -> Option<&$ret> {
             match self {
-                Self::$key(data) => Some(*data),
+                Self::$key(data) => Some(data),
+                _ => None,
+            }
+        }
+
+        pub fn $mut_name(&mut self) -> Option<&mut $ret> {
+            match self {
+                Self::$key(data) => Some(data),
                 _ => None,
             }
         }
@@ -29,14 +39,17 @@ macro_rules! variant {
 }
 
 impl Int {
-    variant!(as_i8, I8, i8);
-    variant!(as_i16, I16, i16);
-    variant!(as_i32, I32, i32);
-    variant!(as_i64, I64, i64);
-    variant!(as_u8, U8, u8);
-    variant!(as_u16, U16, u16);
-    variant!(as_u32, U32, u32);
-    variant!(as_u64, U64, u64);
+    variant!(as_i8, as_i8_mut, I8, i8);
+    variant!(as_i16, as_i16_mut, I16, i16);
+    variant!(as_i32, as_i32_mut, I32, i32);
+    variant!(as_i64, as_i64_mut, I64, i64);
+    variant!(as_u8, as_u8_mut, U8, u8);
+    variant!(as_u16, as_u16_mut, U16, u16);
+    variant!(as_u32, as_u32_mut, U32, u32);
+    variant!(as_u64, as_u64_mut, U64, u64);
+
+    /// Returns the value inside an Int object
+    /// but looses precision and converts to i64
     pub fn as_int(&self) -> i64 {
         match self {
             Self::I8(data) => *data as i64,
@@ -50,6 +63,7 @@ impl Int {
         }
     }
 
+    /// Return the value in string format
     pub fn to_string(&self) -> String {
         match self {
             Self::I8(data) => data.to_string(),
@@ -64,6 +78,7 @@ impl Int {
     }
 }
 
+/// Stores a precision based floating point value
 #[derive(Debug, Clone)]
 pub enum Float {
     F32(f32),
@@ -71,9 +86,11 @@ pub enum Float {
 }
 
 impl Float {
-    variant!(as_f32, F32, f32);
-    variant!(as_f64, F64, f64);
+    variant!(as_f32, as_f32_mut, F32, f32);
+    variant!(as_f64, as_f64_mut, F64, f64);
 
+    /// Return the floating point value losing its precision
+    /// by converting it to f64
     pub fn as_float(&self) -> f64 {
         match self {
             Self::F32(data) => *data as f64,
@@ -81,6 +98,7 @@ impl Float {
         }
     }
 
+    /// Return the value as a string
     pub fn to_string(&self) -> String {
         match self {
             Self::F32(data) => data.to_string(),
@@ -89,44 +107,170 @@ impl Float {
     }
 }
 
+/// A `Value` will represent a given node in a barkml file
 #[derive(Debug, Clone)]
 pub enum Value {
+    /// Modules represent a single BarkML file
+    Module(Vec<Value>),
+    /// Comments always start with #, and multiple lined comments will be appended (squashed) together
     Comment(String),
+    /// Control statements begin with a $ and assign a value
     Control {
+        /// Key of control statement without $
         label: String,
+        /// Value of control statement
         value: Box<Self>,
     },
+    /// Any assignment whose label/identifier does not start with $ is considered a normal
+    /// assignment
     Assignment {
+        /// Key of assignment
         label: String,
+        /// Value
         value: Box<Self>,
     },
+    /// A block is any set of values defined inside braces prefixed first by any identifier
+    /// followed by 0 or more string labels
     Block {
+        /// Identifier of the block
         id: String,
+        /// Any number of labels defined as whitespace sperated strings
         labels: Vec<String>,
+        /// Values defined inside the braces of a block
         statements: Vec<Self>,
     },
+    /// A section is defined by an identifier inside square brackets and contains
+    /// any number of values defined below this identifier until end of file or another
+    /// section is defined
     Section {
+        // Identifier of the section
         id: String,
+        // All statements/values defined below
         statements: Vec<Self>,
     },
 
+    /// A table is a set of string keys to values (set via =)
+    /// This value type can be prefixed with a !Label
     Table(HashMap<String, Self>, Option<String>),
+
+    /// An array of values defined inside square brackets.
+    /// Arrays in BarkML can contain mixed types
+    /// This value type can be prefixed with a !Label
     Array(Vec<Self>, Option<String>),
+
+    /// A macro string is only utilized internally as an in-place
+    /// representation of a macro, its value and label will be resolved after
+    /// parsing and thus there never should be a raw Macro in a resulting fully parsed
+    /// BarkML file.
     Macro(String, Option<String>, bool),
+
+    /// Strings are defined either between single quotes or double quotes
+    /// This value type can be prefixed with a !Label
     String(String, Option<String>),
+
+    /// Bytes are a base64 encoded representation of binary data wrapped inside b'...', once the file
+    /// is parsed the byte data is available decoded from this format.
+    /// This value type can be prefixed with a !Label
     Bytes(Vec<u8>, Option<String>),
+
+    /// Integers are defined as any decimal value, by default
+    /// they are assumed to be a 64-bit signed integer, however
+    /// precision can be defined by suffixing the number with no whitespace
+    /// with one of `i` (for signed integers), `u` (for unsigned integers) followed by
+    /// a precision (8, 16, 32, 64 currently supported)
     Int(Int, Option<String>),
+
+    /// Floating point numbers are defined in numerical value with optional
+    /// scientific notation provided. They are assumed to be
+    /// a 64-bit floating point number, however precision can be
+    /// defined by suffixing the number with 'f' followed by a precision (32, 64 currently supported).
+    /// This value type can be prefixed with a !Label
     Float(Float, Option<String>),
+
+    /// Boolean values  are defined as one of the below keywords for true and false
+    ///
+    /// true: true, True, TRUE, yes, Yes, YES, on, On, ON
+    /// false: false, False, FALSE, no, No, No, off, Off, OFF
+    ///
+    /// This value type can be prefixed with a !Label
     Bool(bool, Option<String>),
+
+    /// A label is any identifier prefixed with a !
+    /// This node will only exist when a value is a label by itself
     Label(String),
+
+    /// A null value can be defined using any of the below keywords
+    ///
+    /// * null
+    /// * Null
+    /// * NULL
+    /// * nil
+    /// * Nil
+    /// * NIL
+    /// * none
+    /// * None
+    /// * NONE
+    /// This value type can be prefixed with a !Label
     Null(Option<String>),
 }
 
-macro_rules! sized_variant {
-    ($name: ident, $key: ident, $ret: ty) => {
-        pub fn $name(&self) -> Option<$ret> {
+macro_rules! as_fn {
+    ($fn_name: ident, $mut_name: ident, $name: ident : $ty: ty where $key: ident) => {
+        pub fn $fn_name(&self) -> Option<&$ty> {
             match self {
-                Self::$key(data, ..) => data.$name(),
+                Self::$key($name,..) => Some($name),
+                _ => None,
+            }
+        }
+
+        pub fn $mut_name(&mut self) -> Option<&mut $ty> {
+            match self {
+                Self::$key($name,..) => Some($name),
+                _ => None,
+            }
+        }
+    };
+
+
+    ($fn_name: ident, $mut_name: ident,  $chain: ident . $mut_chain: ident ( $name: ident : $ty: ty) where $key: ident) => {
+        pub fn $fn_name(&self) -> Option<&$ty> {
+            match self {
+                Self::$key($name,..) => {
+                    $name.$chain()
+                },
+                _ => None,
+            }
+        }
+
+        pub fn $mut_name(&mut self) -> Option<&mut $ty> {
+            match self {
+                Self::$key($name,..) => {
+                    $name.$mut_chain()
+                },
+                _ => None,
+            }
+        }
+    };
+
+    ($fn_name: ident, $mut_name: ident,  { $($name: ident : $ty: ty),* } where $key: ident) => {
+        pub fn $fn_name(&self) -> Option<($(&$ty),*)> {
+            match self {
+                Self::$key {
+                    $($name),*
+                } => {
+                    Some(($($name),*))
+                },
+                _ => None,
+            }
+        }
+
+        pub fn $mut_name(&mut self) -> Option<($(&mut $ty),*)> {
+            match self {
+                Self::$key {
+                    $($name),*
+                } => {
+                    Some(($($name),*))
+                },
                 _ => None,
             }
         }
@@ -134,123 +278,63 @@ macro_rules! sized_variant {
 }
 
 impl Value {
-    pub fn as_section(&self) -> Option<(&String, &Vec<Value>)> {
+    /// Returns the id of a statement value or None if not a statement
+    pub fn get_id(&self) -> Option<&String> {
         match self {
-            Self::Section { id, statements } => Some((id, statements)),
+            Self::Section { id, .. } => Some(id),
+            Self::Block { id, .. } => Some(id),
+            Self::Assignment { label, .. } => Some(label),
+            Self::Control { label, .. } => Some(label),
             _ => None,
         }
     }
 
-    pub fn as_block(&self) -> Option<(&String, &Vec<String>, &Vec<Value>)> {
-        match self {
-            Self::Block {
-                id,
-                labels,
-                statements,
-            } => Some((id, labels, statements)),
-            _ => None,
-        }
-    }
-
-    pub fn as_assignment(&self) -> Option<(&String, &Value)> {
-        match self {
-            Self::Assignment { label, value } => Some((label, value)),
-            _ => None,
-        }
-    }
-
-    pub fn as_control(&self) -> Option<(&String, &Value)> {
-        match self {
-            Self::Control { label, value } => Some((label, value)),
-            _ => None,
-        }
-    }
-    pub fn as_comment(&self) -> Option<&String> {
-        match self {
-            Self::Comment(value) => Some(value),
-            _ => None,
-        }
-    }
-
-    pub fn as_table(&self) -> Option<&HashMap<String, Self>> {
-        match self {
-            Self::Table(value, ..) => Some(value),
-            _ => None,
-        }
-    }
-
-    pub fn as_array(&self) -> Option<&Vec<Self>> {
-        match self {
-            Self::Array(value, ..) => Some(value),
-            _ => None,
-        }
-    }
-
-    pub fn as_macro(&self) -> Option<&String> {
-        match self {
-            Self::Macro(value, ..) => Some(value),
-            _ => None,
-        }
-    }
-
-    pub fn as_string(&self) -> Option<&String> {
-        match self {
-            Self::String(value, ..) => Some(value),
-            _ => None,
-        }
-    }
-
-    pub fn as_bytes(&self) -> Option<&Vec<u8>> {
-        match self {
-            Self::Bytes(value, ..) => Some(value),
-            _ => None,
-        }
-    }
+    as_fn!(as_module, as_module_mut, value: Vec<Value> where Module);
+    as_fn!(as_section, as_section_mut, {id: String, statements: Vec<Value>} where Section);
+    as_fn!(as_block, as_block_mut, {id: String, labels: Vec<String>, statements: Vec<Value>} where Block);
+    as_fn!(as_assignment, as_assignment_mut, {label: String, value: Box<Value>} where Assignment);
+    as_fn!(as_control, as_control_mut, {label: String, value: Box<Value>} where Control);
+    as_fn!(as_comment, as_comment_mut, value: String where Comment);
+    as_fn!(as_table, as_table_mut, value: HashMap<String, Value> where Table);
+    as_fn!(as_array, as_array_mut, value: Vec<Value> where Array);
+    as_fn!(as_macro, as_macro_mut, value: String where Macro);
+    as_fn!(as_string, as_string_mut, value: String where String);
+    as_fn!(as_bytes, as_bytes_mut, value: Vec<u8> where Bytes);
 
     pub fn as_int(&self) -> Option<i64> {
         match self {
-            Self::Int(value, ..) => Some(value.as_int()),
+            Self::Int(int, ..) => Some(int.as_int()),
             _ => None,
         }
     }
 
-    sized_variant!(as_i8, Int, i8);
-    sized_variant!(as_i16, Int, i16);
-    sized_variant!(as_i32, Int, i32);
-    sized_variant!(as_i64, Int, i64);
-    sized_variant!(as_u8, Int, u8);
-    sized_variant!(as_u16, Int, u16);
-    sized_variant!(as_u32, Int, u32);
-    sized_variant!(as_u64, Int, u64);
+    as_fn!(as_i8, as_i8_mut, as_i8.as_i8_mut(value: i8) where Int);
+    as_fn!(as_i16, as_i16_mut, as_i16.as_i16_mut(value: i16) where Int);
+    as_fn!(as_i32, as_i32_mut, as_i32.as_i32_mut(value: i32) where Int);
+    as_fn!(as_i64, as_i64_mut, as_i64.as_i64_mut(value: i64) where Int);
+    as_fn!(as_u8, as_u8_mut, as_u8.as_u8_mut(value: u8) where Int);
+    as_fn!(as_u16, as_u16_mut, as_u16.as_u16_mut(value: u16) where Int);
+    as_fn!(as_u32, as_u32_mut, as_u32.as_u32_mut(value: u32) where Int);
+    as_fn!(as_u64, as_u64_mut, as_u64.as_u64_mut(value: u64) where Int);
 
     pub fn as_float(&self) -> Option<f64> {
         match self {
-            Self::Float(value, ..) => Some(value.as_float()),
+            Self::Float(float, ..) => Some(float.as_float()),
             _ => None,
         }
     }
 
-    sized_variant!(as_f32, Float, f32);
-    sized_variant!(as_f64, Float, f64);
+    as_fn!(as_f32, as_f32_mut, as_f32.as_f32_mut(value: f32) where Float);
+    as_fn!(as_f64, as_f64_mut, as_f64.as_f64_mut(value: f64) where Float);
+    as_fn!(as_bool, as_bool_mut, value: bool where Bool);
+    as_fn!(as_label, as_label_mut, value: String where Label);
 
-    pub fn as_bool(&self) -> Option<bool> {
-        match self {
-            Self::Bool(value, ..) => Some(*value),
-            _ => None,
-        }
-    }
-
-    pub fn as_label(&self) -> Option<&String> {
-        match self {
-            Self::Label(value) => Some(value),
-            _ => None,
-        }
-    }
-
+    /// Returns true if the value is a null value
     fn is_null(&self) -> bool {
         matches!(self, Self::Null(_))
     }
 
+    /// Used internally to adjust the label of a node
     pub(crate) fn set_label(&mut self, value: &str) {
         match self {
             Self::Table(_, ref mut label) => *label = Some(value.to_owned()),
@@ -267,6 +351,8 @@ impl Value {
         }
     }
 
+    /// Used internally to return the value as what should be used
+    /// to replace a macro in a macro string with this value
     pub(crate) fn to_macro_string(&self) -> String {
         match self {
             Self::Table(..) => self.to_string(),
@@ -289,8 +375,9 @@ impl Value {
         }
     }
 
+    /// Read the value from a message pack encoded binary object
     #[cfg(feature = "binary")]
-    pub fn from_binary(entry: msgpack_simple::MsgPack) -> Result<Self> {
+    pub fn from_binary(entry: MsgPack) -> Result<Self> {
         let ext = entry
             .as_extension()
             .context(error::MsgPackNotExpectedSnafu)?;
@@ -444,6 +531,7 @@ impl Value {
         }
     }
 
+    /// Find a specific entry in a message pack object
     #[cfg(feature = "binary")]
     fn find_entry(input: &Vec<MapElement>, key: &str) -> Result<MsgPack> {
         input
@@ -462,6 +550,8 @@ impl Value {
             .context(error::MsgPackUnsupportedSnafu)
     }
 
+    /// Extract a value encoded with a label from a MsgPack
+    /// extension object
     #[cfg(feature = "binary")]
     fn extract(entry: &Extension) -> Result<(Option<String>, MsgPack)> {
         let table =
@@ -496,8 +586,10 @@ impl Value {
         Ok((label, content))
     }
 
+    /// Convert this value into a message pack encoded
+    /// binary value.
     #[cfg(feature = "binary")]
-    pub fn to_binary(&self) -> msgpack_simple::MsgPack {
+    pub fn to_binary(&self) -> MsgPack {
         let (type_id, value) = match self {
             Self::Comment(value) => (0, MsgPack::String(value.clone())),
             Self::Control { label, value } => (
@@ -711,6 +803,11 @@ impl Value {
 impl ToString for Value {
     fn to_string(&self) -> String {
         match self {
+            Self::Module(children) => children
+                .iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<String>>()
+                .join("\n"),
             Self::Comment(comment) => format!("# {}", comment),
             Self::Control { label, value } => format!("${} = {}", label, value.to_string()),
             Self::Assignment { label, value } => format!("{} = {}", label, value.to_string()),

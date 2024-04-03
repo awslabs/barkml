@@ -3,9 +3,8 @@ use msgpack_simple::MsgPack;
 #[cfg(feature = "binary")]
 use snafu::ResultExt;
 
+pub use loader::*;
 pub use value::*;
-
-pub use crate::loader::Loader;
 
 pub mod error;
 mod idl;

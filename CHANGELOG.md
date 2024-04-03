@@ -1,3 +1,10 @@
+## 0.4.1
+
+Fixes:
+
+* Fix import issue in lib.rs
+* Remove unimplemented feature
+
 ## 0.3.0 - 0.4.0
 
 Features:

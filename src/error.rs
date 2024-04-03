@@ -1,14 +1,17 @@
-use peg::str::LineCol;
-use snafu::Snafu;
 use std::fmt::Display;
 use std::io;
 use std::path::PathBuf;
+
+use peg::str::LineCol;
+use snafu::Snafu;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub))]
 pub enum Error {
+    #[snafu(display("Error resolving macro, no such symbol found by path {}", path))]
+    MacroNotFound { path: String },
     #[snafu(display("Error parsing BarkML file: {}", source))]
     Parse {
         #[snafu(source(from(peg::error::ParseError<LineCol>, Box::new)))]

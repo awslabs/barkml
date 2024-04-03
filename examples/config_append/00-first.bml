@@ -1,0 +1,22 @@
+$schema = !Test "1.0.0"
+[section-a]
+# Documentation
+number = 4
+float  = 3.14
+string = "foobar"
+array  = ["hello", 5, 3.14, 'single']
+object = { foo = b'YmluYXJ5c3RyaW5n', "bar" = 4 }
+block "block-a" "label-a" {
+    simple = "me"
+}
+["section-b"]
+# Documentation
+number = 4
+float  = 3.14
+string = "foobar"
+array  = ["hello", 5, 3.14, 'single']
+object = { foo = b'YmluYXJ5c3RyaW5n', "bar" = 4 }
+block "block-a" "label-a" {
+    simple = m'{section-a.string} bar'
+    replacement = m!section-a.float
+}

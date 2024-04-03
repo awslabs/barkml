@@ -1,9 +1,12 @@
-use crate::error::{self, Result};
+use std::collections::HashMap;
+use std::fmt::{Display, Formatter, Write};
+
 use base64::Engine;
 #[cfg(feature = "binary")]
 use msgpack_simple::{Extension, MapElement, MsgPack};
 use snafu::{ensure, OptionExt, ResultExt};
-use std::collections::HashMap;
+
+use crate::error::{self, Result};
 
 /// Stores integer values in their appropriate
 /// precisioned type.
@@ -62,19 +65,23 @@ impl Int {
             Self::U64(data) => *data as i64,
         }
     }
+}
 
-    /// Return the value in string format
-    pub fn to_string(&self) -> String {
-        match self {
-            Self::I8(data) => data.to_string(),
-            Self::I16(data) => data.to_string(),
-            Self::I32(data) => data.to_string(),
-            Self::I64(data) => data.to_string(),
-            Self::U8(data) => data.to_string(),
-            Self::U16(data) => data.to_string(),
-            Self::U32(data) => data.to_string(),
-            Self::U64(data) => data.to_string(),
-        }
+impl Display for Int {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            match self {
+                Self::I8(data) => data.to_string(),
+                Self::I16(data) => data.to_string(),
+                Self::I32(data) => data.to_string(),
+                Self::I64(data) => data.to_string(),
+                Self::U8(data) => data.to_string(),
+                Self::U16(data) => data.to_string(),
+                Self::U32(data) => data.to_string(),
+                Self::U64(data) => data.to_string(),
+            }
+            .as_str(),
+        )
     }
 }
 
@@ -97,13 +104,17 @@ impl Float {
             Self::F64(data) => *data,
         }
     }
+}
 
-    /// Return the value as a string
-    pub fn to_string(&self) -> String {
-        match self {
-            Self::F32(data) => data.to_string(),
-            Self::F64(data) => data.to_string(),
-        }
+impl Display for Float {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            match self {
+                Self::F64(data) => data.to_string(),
+                Self::F32(data) => data.to_string(),
+            }
+            .as_str(),
+        )
     }
 }
 
@@ -902,7 +913,7 @@ impl ToString for Value {
                 if let Some(label) = label {
                     s += format!("!{} ", label).as_str();
                 }
-                s += format!("{}", int.to_string()).as_str();
+                s += int.to_string().as_str();
                 s
             }
             Self::Float(float, label) => {
@@ -910,7 +921,7 @@ impl ToString for Value {
                 if let Some(label) = label {
                     s += format!("!{} ", label).as_str();
                 }
-                s += format!("{}", float.to_string()).as_str();
+                s += float.to_string().as_str();
                 s
             }
             Self::Bool(boolean, label) => {

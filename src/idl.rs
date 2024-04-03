@@ -1,9 +1,8 @@
+use base64::Engine;
+use snafu::ResultExt;
+
 use crate::value::Value;
 use crate::{Float, Int};
-use base64::Engine;
-use peg;
-use snafu::ResultExt;
-use std::{cmp::max, collections::HashMap};
 
 peg::parser! {
     grammar parser() for str {
@@ -173,209 +172,15 @@ peg::parser! {
             = c:(comment() / section() / control() / assignment() / block() / value() ) { c }
 
         pub rule idl() -> Vec<Value> = ws()? s:(statement() ** ws()) ws()? {?
-            let mut adjust_sections = join_statements(s);
-            resolve_macros(adjust_sections.as_mut_slice(), &mut HashMap::new(), None)?;
-            Ok(adjust_sections)
+            Ok(join_statements(s))
         }
     }
 }
 
-pub fn from_str_flat(input: &str) -> crate::error::Result<Vec<Value>> {
-    parser::idl(input).context(crate::error::ParseSnafu)
-}
-
-pub fn from_str(input: &str) -> crate::error::Result<Value> {
-    Ok(Value::Module(from_str_flat(input)?))
-}
-
-fn macrotize(
-    input: &str,
-    symbol_table: &mut HashMap<String, Value>,
-    prefix: Option<String>,
-) -> Result<String, &'static str> {
-    let mut start_index = -1;
-    let original = input.to_string();
-    let mut final_string = original.clone();
-    let mut offset: i64 = 0;
-    let mut count = 0;
-    for (i, c) in input.chars().enumerate() {
-        if c == '{' && start_index == -1 {
-            start_index = i as i64;
-        } else if c == '}' && start_index != -1 {
-            count += 1;
-            let copy = original.clone();
-            let (before, after) = copy.split_at(start_index as usize);
-            let (middle, _) = after.split_at(i - before.len());
-            let mut key = middle[1..].to_string();
-            if key.starts_with("self.") {
-                key = key.strip_prefix("self.").unwrap().to_string();
-                if let Some(prefix) = prefix.as_ref() {
-                    let segments: Vec<&str> = prefix.split('.').collect();
-                    let prefix = segments[..segments.len() - 1].join(".");
-                    key = format!("{}.{}", prefix, key);
-                }
-            } else if key.starts_with("super.") {
-                if let Some(prefix) = prefix.as_ref() {
-                    let segments: Vec<&str> = prefix.split('.').collect();
-                    let mut new_prefix = segments[..segments.len() - 1].join(".");
-                    while key.starts_with("super.") {
-                        key = key.strip_prefix("super.").unwrap().to_string();
-                        let segments: Vec<&str> = new_prefix.split('.').collect();
-                        new_prefix = segments[..segments.len() - 1].join(".");
-                    }
-                    key = format!("{}.{}", new_prefix, key);
-                }
-            }
-            let replacement = match symbol_table.get(&key) {
-                Some(data) => Ok(data.to_macro_string()),
-                None => Err("No symbol found"),
-            }?;
-            let sindex = if offset == 0 {
-                i as i64 - count
-            } else {
-                offset + 1
-            };
-            let (before, rem) = final_string.split_at(max(sindex, 0) as usize);
-            let (_, mut after) = rem.split_at((count + 1) as usize);
-            after = if after.starts_with('}') {
-                after.strip_prefix('}').unwrap()
-            } else {
-                after
-            };
-            final_string = before.to_string() + replacement.as_str() + after;
-            offset += if replacement.len() >= count as usize {
-                replacement.len() as i64
-            } else {
-                replacement.len() as i64 - count
-            };
-            start_index = -1;
-            count = 0;
-        } else if start_index != -1 {
-            count += 1;
-        }
-    }
-    Ok(final_string)
-}
-
-fn resolve_macro(
-    value: &mut Value,
-    symbol_table: &mut HashMap<String, Value>,
-    prefix: Option<String>,
-) -> Result<(), &'static str> {
-    match value {
-        Value::Macro(pattern, label, is_string) => {
-            let label = label.clone();
-            if *is_string {
-                let string = macrotize(pattern.as_str(), symbol_table, prefix.clone())?;
-                *value = Value::String(string.clone(), label.clone());
-            } else {
-                *value = match symbol_table.get(pattern) {
-                    Some(data) => Ok(data.clone()),
-                    None => Err("No symbol found"),
-                }?;
-                if let Some(label) = label.as_ref() {
-                    value.set_label(label.as_str());
-                }
-            }
-
-            if let Some(prefix) = prefix.as_ref() {
-                symbol_table.insert(prefix.clone(), value.clone());
-            }
-        }
-        Value::Array(array, _) => {
-            for (i, item) in array.iter_mut().enumerate() {
-                resolve_macro(
-                    item,
-                    symbol_table,
-                    prefix.as_ref().map(|prefix| format!("{}[{}]", prefix, i)),
-                )?;
-            }
-        }
-        Value::Table(table, _) => {
-            for (key, value) in table.iter_mut() {
-                resolve_macro(
-                    value,
-                    symbol_table,
-                    prefix.as_ref().map(|prefix| format!("{}.{}", prefix, key)),
-                )?;
-            }
-        }
-        _ => {
-            if let Some(prefix) = prefix.as_ref() {
-                symbol_table.insert(prefix.clone(), value.clone());
-            }
-        }
-    }
-    Ok(())
-}
-
-fn resolve_macros(
-    input: &mut [Value],
-    symbol_table: &mut HashMap<String, Value>,
-    prefix: Option<String>,
-) -> Result<(), &'static str> {
-    for stmt in input.iter_mut() {
-        match stmt {
-            Value::Section { id, statements } => {
-                resolve_macros(
-                    statements,
-                    symbol_table,
-                    if let Some(prefix) = prefix.as_ref() {
-                        Some(format!("{}.{}", prefix, id))
-                    } else {
-                        Some(id.clone())
-                    },
-                )?;
-            }
-            Value::Block {
-                id,
-                labels,
-                statements,
-                ..
-            } => {
-                let mut new_labels = labels.clone();
-                resolve_macros(
-                    statements,
-                    symbol_table,
-                    if let Some(prefix) = prefix.as_ref() {
-                        let mut items = vec![prefix.clone(), id.clone()];
-                        items.append(&mut new_labels);
-                        Some(items.join("."))
-                    } else {
-                        let mut items = vec![id.clone()];
-                        items.append(&mut new_labels);
-                        Some(items.join("."))
-                    },
-                )?;
-            }
-            Value::Assignment { label, value } => {
-                resolve_macro(
-                    value,
-                    symbol_table,
-                    if let Some(prefix) = prefix.as_ref() {
-                        Some(format!("{}.{}", prefix, label))
-                    } else {
-                        Some(label.clone())
-                    },
-                )?;
-            }
-            Value::Control { label, value } => {
-                resolve_macro(
-                    value,
-                    symbol_table,
-                    if let Some(prefix) = prefix.as_ref() {
-                        Some(format!("{}.${}", prefix, label))
-                    } else {
-                        Some(format!("${}", label))
-                    },
-                )?;
-            }
-            value => {
-                resolve_macro(value, symbol_table, prefix.clone())?;
-            }
-        }
-    }
-    Ok(())
+pub(crate) fn parse(input: &str) -> crate::error::Result<Value> {
+    Ok(Value::Module(
+        parser::idl(input).context(crate::error::ParseSnafu)?,
+    ))
 }
 
 fn join_statements(input: Vec<Value>) -> Vec<Value> {
@@ -407,9 +212,11 @@ fn join_statements(input: Vec<Value>) -> Vec<Value> {
 
 #[cfg(test)]
 mod test {
-    use crate::{Float, Int};
-    use assert_matches::assert_matches;
     use std::collections::HashMap;
+
+    use assert_matches::assert_matches;
+
+    use crate::{Float, Int};
 
     use super::parser::idl;
 
@@ -694,7 +501,7 @@ http "test" "this" {
                 ],
             },
         ];
-        let config_str = std::fs::read_to_string("example.bml").unwrap();
+        let config_str = std::fs::read_to_string("examples/example.bml").unwrap();
         let config = super::parser::idl(config_str.as_str()).unwrap();
         assert_matches!(config, _expected);
     }

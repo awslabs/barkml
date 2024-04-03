@@ -1,0 +1,21 @@
+[section-c]
+# Documentation
+number = 4
+float  = 3.14
+string = "foobar"
+array  = ["hello", 5, 3.14, 'single']
+object = { foo = b'YmluYXJ5c3RyaW5n', "bar" = 4 }
+block "block-a" "label-a" {
+    simple = "me"
+}
+["section-d"]
+# Documentation
+number = 4
+float  = 3.14
+string = "foobar"
+array  = ["hello", 5, 3.14, 'single']
+object = { foo = b'YmluYXJ5c3RyaW5n', "bar" = 4 }
+block "block-a" "label-a" {
+    simple = m'{section-c.string} bar'
+    replacement = m!section-c.float
+}

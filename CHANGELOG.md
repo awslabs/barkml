@@ -2,10 +2,15 @@
 
 Features:
 
-* Added config loader construct under feature _loader_
+* Added config loader construct
 
 > The Loader builder gives users the ability to load configuration files with more control. It also
 > introduces an ability to load and merge multiple configuration files in a directory
+
+* Added precision numeral values
+
+> Users can now define a precision for integers using standard rust suffixes (u8, i8, u16, i16, u32, i32, u64, i64).
+> Users can also define a precision for floating point numbers using suffixes (f32, f64)
 
 Changes:
 

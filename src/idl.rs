@@ -1,5 +1,6 @@
 use base64::Engine;
 use snafu::ResultExt;
+use std::path::PathBuf;
 
 use crate::value::Value;
 use crate::{Float, Int};

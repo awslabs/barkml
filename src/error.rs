@@ -38,12 +38,20 @@ pub enum Error {
     LoaderNotFile { path: PathBuf },
     #[snafu(display("A collision occurred merging configuration files on id {}", id))]
     LoaderMergeCollision { id: String },
+    #[snafu(display("Could not parse the module name from the filename"))]
+    LoaderModuleParse,
+    #[snafu(display("A module with name '{}' is already present in this loader", name))]
+    LoaderModuleCollision { name: String },
+    #[snafu(display("No modules have been added to this loader to load from"))]
+    LoaderNoModules,
 
     #[snafu(display("IO error occured: {}", source))]
     Io {
         #[snafu(source(from(std::io::Error, Box::new)))]
         source: Box<io::Error>,
     },
+    #[snafu(display("{}", message))]
+    Custom { message: String },
 }
 
 impl serde::ser::Error for Error {

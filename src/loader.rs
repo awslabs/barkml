@@ -1,179 +1,35 @@
 use std::cmp::max;
 use std::collections::HashMap;
-use std::fs;
-use std::fs::read_dir;
-use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::fs::{read_dir, File};
+use std::io::{Read, Seek};
+use std::path::Path;
 
 use snafu::{ensure, OptionExt, ResultExt};
 
-use crate::error::{self, Result};
+use crate::error::{self, Error, Result};
 use crate::Value;
 
-/// Mode of operation for the configuration
-/// loader.
-pub enum LoaderMode {
-    /// Single will load a single file provided to path
-    /// and expects path to be a file.
-    Single,
-    /// Merge will load a single file by the provided name if it exists
-    /// or if there exists a directory named <path>.d will load and merge
-    /// all configuration files inside said directory
-    Merge,
-    /// Append will load a single file by the provided name if it exists
-    /// or if there exists a directory named <path>.d will load and append
-    /// all configuration files inside said directory
-    Append,
-}
+/// LoaderInterface defines the shared interface for loaders
+pub trait Loader {
+    fn is_resolution_enabled(&self) -> bool;
+    fn is_collision_allowed(&self) -> bool;
+    fn skip_macro_resolution(&mut self) -> Result<&mut Self>;
+    fn mode(&mut self, mode: LoaderMode) -> Result<&mut Self>;
+    fn allow_collisions(&mut self) -> Result<&mut Self>;
+    fn read(&self) -> Result<Value>;
 
-enum Data {
-    Source(String),
-    File(PathBuf),
-}
-
-/// Loader can be used to load a single or directory of configuration files
-/// with user control
-pub struct Loader {
-    mode: LoaderMode,
-    discovered: Vec<Data>,
-    collisions: bool,
-    resolve_macros: bool,
-}
-
-impl Loader {
-    /// Create a new loader with the default settings
-    /// which is:
-    ///   mode = Single
-    ///   allow_collisions = false
-    ///   resolve_macros = true
-    pub fn new() -> Self {
-        Self {
-            mode: LoaderMode::Single,
-            discovered: Vec::new(),
-            collisions: false,
-            resolve_macros: true,
-        }
-    }
-
-    /// Set the loader mode to use
-    pub fn mode(&mut self, mode: LoaderMode) -> &mut Self {
-        self.mode = mode;
-        self
-    }
-
-    /// Add a path to this loader
-    pub fn path<P>(&mut self, path: P) -> Result<&mut Self>
-    where
-        P: AsRef<Path>,
-    {
-        let path = path.as_ref();
-        ensure!(
-            path.try_exists().context(error::IoSnafu)?,
-            error::LoaderNotFoundSnafu {
-                path: path.to_path_buf()
-            }
-        );
-        match self.mode {
-            LoaderMode::Single => {
-                ensure!(
-                    path.is_file(),
-                    error::LoaderNotFileSnafu {
-                        path: path.to_path_buf()
-                    }
-                );
-                self.discovered.push(Data::File(path.to_path_buf()));
-            }
-            _ => {
-                if path.is_file() {
-                    self.discovered.push(Data::File(path.to_path_buf()));
-                } else {
-                    let dir_reader = read_dir(path).context(error::IoSnafu)?;
-
-                    for entry in dir_reader {
-                        let entry = entry.context(error::IoSnafu)?;
-                        let entry_path = entry.path();
-                        if entry_path.is_file() {
-                            self.discovered.push(Data::File(entry_path));
-                        }
-                    }
-                }
-            }
-        }
-        Ok(self)
-    }
-
-    /// Adds an inline string as a configuration module
-    pub fn source(&mut self, input: &str) -> &mut Self {
-        self.discovered.push(Data::Source(input.to_string()));
-        self
-    }
-
-    /// When merging or appending multiple files together
-    /// tell the loader to allow collisions and overwrite the first found one with
-    /// the next
-    pub fn allow_collisions(&mut self) -> &mut Self {
-        self.collisions = true;
-        self
-    }
-
-    /// Load all the configuration files and return everything as
-    /// a single module
-    pub fn load(&self) -> Result<Value> {
-        let mut found = Value::Module(Vec::new());
-
-        match self.mode {
-            LoaderMode::Single => {
-                let code = match self.discovered.first().unwrap() {
-                    Data::File(path) => fs::read_to_string(path).context(error::IoSnafu)?,
-                    Data::Source(code) => code.clone(),
-                };
-                found = crate::idl::parse(code.as_str())?;
-            }
-            LoaderMode::Merge => {
-                if self.discovered.len() == 1 {
-                    let code = match self.discovered.first().unwrap() {
-                        Data::File(path) => fs::read_to_string(path).context(error::IoSnafu)?,
-                        Data::Source(code) => code.clone(),
-                    };
-                    found = crate::idl::parse(code.as_str())?;
-                } else {
-                    for entry in self.discovered.iter() {
-                        let code = match entry {
-                            Data::File(path) => fs::read_to_string(path).context(error::IoSnafu)?,
-                            Data::Source(code) => code.clone(),
-                        };
-                        let right = crate::idl::parse(code.as_str())?;
-                        self.merge_into(&mut found, &right)?;
-                    }
-                }
-            }
-            LoaderMode::Append => {
-                if self.discovered.len() == 1 {
-                    let code = match self.discovered.first().unwrap() {
-                        Data::File(path) => fs::read_to_string(path).context(error::IoSnafu)?,
-                        Data::Source(code) => code.clone(),
-                    };
-                    found = crate::idl::parse(code.as_str())?;
-                } else {
-                    for entry in self.discovered.iter() {
-                        let code = match entry {
-                            Data::File(path) => fs::read_to_string(path).context(error::IoSnafu)?,
-                            Data::Source(code) => code.clone(),
-                        };
-                        let right = crate::idl::parse(code.as_str())?;
-                        self.append_into(&mut found, &right)?;
-                    }
-                }
-            }
-        }
-
-        if self.resolve_macros {
-            let mut statements = found.as_module().unwrap().clone();
+    fn macro_resolution(&self, module: &mut Value) -> Result<()> {
+        if self.is_resolution_enabled() {
+            let statements = module.as_module_mut().unwrap();
             resolve_macros(statements.as_mut_slice(), &mut HashMap::new(), None)?;
-            found = Value::Module(statements);
         }
+        Ok(())
+    }
 
-        Ok(found)
+    fn load(&self) -> Result<Value> {
+        let mut module = self.read()?;
+        self.macro_resolution(&mut module)?;
+        Ok(module)
     }
 
     fn merge_into(&self, left: &mut Value, right: &Value) -> Result<()> {
@@ -224,7 +80,10 @@ impl Loader {
                         }
                     }
                 } else {
-                    ensure!(self.collisions, error::LoaderMergeCollisionSnafu { id });
+                    ensure!(
+                        self.is_collision_allowed(),
+                        error::LoaderMergeCollisionSnafu { id }
+                    );
                     *left = right.clone();
                 }
             }
@@ -251,7 +110,10 @@ impl Loader {
                         }
                     }
                 } else {
-                    ensure!(self.collisions, error::LoaderMergeCollisionSnafu { id });
+                    ensure!(
+                        self.is_collision_allowed(),
+                        error::LoaderMergeCollisionSnafu { id }
+                    );
                     *left = right.clone();
                 }
             }
@@ -260,7 +122,7 @@ impl Loader {
                     self.merge_into(left_value.as_mut(), value.as_ref())?;
                 } else {
                     ensure!(
-                        self.collisions,
+                        self.is_collision_allowed(),
                         error::LoaderMergeCollisionSnafu { id: label }
                     );
                     *left = right.clone();
@@ -271,7 +133,7 @@ impl Loader {
                     self.merge_into(left_value.as_mut(), value.as_ref())?;
                 } else {
                     ensure!(
-                        self.collisions,
+                        self.is_collision_allowed(),
                         error::LoaderMergeCollisionSnafu { id: label }
                     );
                     *left = right.clone();
@@ -288,7 +150,7 @@ impl Loader {
                     }
                 } else {
                     ensure!(
-                        self.collisions,
+                        self.is_collision_allowed(),
                         error::LoaderMergeCollisionSnafu {
                             id: "table definition"
                         }
@@ -325,7 +187,7 @@ impl Loader {
                                 .is_some()
                             {
                                 ensure!(
-                                    self.collisions,
+                                    self.is_collision_allowed(),
                                     error::LoaderMergeCollisionSnafu { id: rid }
                                 );
                             }
@@ -355,7 +217,7 @@ impl Loader {
                                 .is_some()
                             {
                                 ensure!(
-                                    self.collisions,
+                                    self.is_collision_allowed(),
                                     error::LoaderMergeCollisionSnafu { id: rid }
                                 );
                             }
@@ -363,7 +225,10 @@ impl Loader {
                         }
                     }
                 } else {
-                    ensure!(self.collisions, error::LoaderMergeCollisionSnafu { id });
+                    ensure!(
+                        self.is_collision_allowed(),
+                        error::LoaderMergeCollisionSnafu { id }
+                    );
                     *left = right.clone();
                 }
             }
@@ -388,7 +253,7 @@ impl Loader {
                                 .is_some()
                             {
                                 ensure!(
-                                    self.collisions,
+                                    self.is_collision_allowed(),
                                     error::LoaderMergeCollisionSnafu { id: rid }
                                 );
                             }
@@ -396,7 +261,10 @@ impl Loader {
                         }
                     }
                 } else {
-                    ensure!(self.collisions, error::LoaderMergeCollisionSnafu { id });
+                    ensure!(
+                        self.is_collision_allowed(),
+                        error::LoaderMergeCollisionSnafu { id }
+                    );
                     *left = right.clone();
                 }
             }
@@ -405,7 +273,7 @@ impl Loader {
                     self.merge_into(left_value.as_mut(), value.as_ref())?;
                 } else {
                     ensure!(
-                        self.collisions,
+                        self.is_collision_allowed(),
                         error::LoaderMergeCollisionSnafu { id: label }
                     );
                     *left = right.clone();
@@ -416,7 +284,7 @@ impl Loader {
                     self.merge_into(left_value.as_mut(), value.as_ref())?;
                 } else {
                     ensure!(
-                        self.collisions,
+                        self.is_collision_allowed(),
                         error::LoaderMergeCollisionSnafu { id: label }
                     );
                     *left = right.clone();
@@ -427,7 +295,7 @@ impl Loader {
                     for (key, value) in right_map {
                         if left_map.get(key).is_some() {
                             ensure!(
-                                self.collisions,
+                                self.is_collision_allowed(),
                                 error::LoaderMergeCollisionSnafu { id: key }
                             );
                         }
@@ -435,7 +303,7 @@ impl Loader {
                     }
                 } else {
                     ensure!(
-                        self.collisions,
+                        self.is_collision_allowed(),
                         error::LoaderMergeCollisionSnafu {
                             id: "table definition"
                         }
@@ -448,6 +316,181 @@ impl Loader {
             }
         }
         Ok(())
+    }
+}
+
+/// Mode of operation for the configuration
+/// loader.
+pub enum LoaderMode {
+    /// Single will load a single file provided to path
+    /// and expects path to be a file.
+    Single,
+    /// Merge will load a single file by the provided name if it exists
+    /// or if there exists a directory named <path>.d will load and merge
+    /// all configuration files inside said directory
+    Merge,
+    /// Append will load a single file by the provided name if it exists
+    /// or if there exists a directory named <path>.d will load and append
+    /// all configuration files inside said directory
+    Append,
+}
+
+/// Loader can be used to load a single or directory of configuration files
+/// with user control
+pub struct StandardLoader {
+    mode: LoaderMode,
+    modules: HashMap<String, Value>,
+    collisions: bool,
+    resolve_macros: bool,
+}
+
+impl StandardLoader {
+    /// Create a new loader with the default settings
+    /// which is:
+    ///   mode = Single
+    ///   allow_collisions = false
+    ///   resolve_macros = true
+    pub fn new() -> Self {
+        Self {
+            mode: LoaderMode::Single,
+            modules: HashMap::new(),
+            collisions: false,
+            resolve_macros: true,
+        }
+    }
+
+    fn add_from_file<P>(&mut self, path: P) -> Result<()>
+    where
+        P: AsRef<Path>,
+    {
+        let path = path.as_ref();
+        let name = basename(path)?;
+        let mut file = File::open(path).context(error::IoSnafu)?;
+        self.add_from_reader(name.as_str(), &mut file)
+    }
+
+    fn add_from_reader<R>(&mut self, name: &str, reader: &mut R) -> Result<()>
+    where
+        R: Read + Seek,
+    {
+        let mut code = String::default();
+        reader.read_to_string(&mut code).context(error::IoSnafu)?;
+        let module = crate::idl::parse(code.as_str())?;
+        self.modules.insert(name.to_string(), module);
+        Ok(())
+    }
+
+    /// Add a path to this loader
+    pub fn path<P>(&mut self, path: P) -> Result<&mut Self>
+    where
+        P: AsRef<Path>,
+    {
+        let path = path.as_ref();
+        ensure!(
+            path.try_exists().context(error::IoSnafu)?,
+            error::LoaderNotFoundSnafu {
+                path: path.to_path_buf()
+            }
+        );
+        match self.mode {
+            LoaderMode::Single => {
+                ensure!(
+                    path.is_file(),
+                    error::LoaderNotFileSnafu {
+                        path: path.to_path_buf()
+                    }
+                );
+                self.add_from_file(path)?;
+            }
+            _ => {
+                if path.is_file() {
+                    self.add_from_file(path)?;
+                } else {
+                    let dir_reader = read_dir(path).context(error::IoSnafu)?;
+
+                    for entry in dir_reader {
+                        let entry = entry.context(error::IoSnafu)?;
+                        let entry_path = entry.path();
+                        if entry_path.is_file() {
+                            self.add_from_file(entry_path.clone())?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(self)
+    }
+
+    /// Adds an inline string as a configuration module
+    pub fn source(&mut self, input: &str) -> Result<&mut Self> {
+        ensure!(
+            !self.modules.contains_key("root"),
+            error::LoaderModuleCollisionSnafu { name: "root" }
+        );
+        let value = crate::idl::parse(input)?;
+        self.modules.insert("root".to_string(), value);
+        Ok(self)
+    }
+}
+
+impl Loader for StandardLoader {
+    fn is_resolution_enabled(&self) -> bool {
+        self.resolve_macros
+    }
+
+    fn is_collision_allowed(&self) -> bool {
+        self.collisions
+    }
+
+    fn skip_macro_resolution(&mut self) -> Result<&mut Self> {
+        self.resolve_macros = false;
+        Ok(self)
+    }
+
+    /// Set the loader mode to use
+    fn mode(&mut self, mode: LoaderMode) -> Result<&mut Self> {
+        self.mode = mode;
+        Ok(self)
+    }
+
+    /// When merging or appending multiple files together
+    /// tell the loader to allow collisions and overwrite the first found one with
+    /// the next
+    fn allow_collisions(&mut self) -> Result<&mut Self> {
+        self.collisions = true;
+        Ok(self)
+    }
+
+    /// Load all the configuration files and return everything as
+    /// a single module
+    fn read(&self) -> Result<Value> {
+        let mut found = Value::Module(Vec::new());
+        ensure!(!self.modules.is_empty(), error::LoaderNoModulesSnafu);
+
+        match self.mode {
+            LoaderMode::Single => {
+                let module_list: Vec<&Value> = self.modules.values().collect();
+                found = module_list[0].clone();
+            }
+            LoaderMode::Merge => {
+                for (_, right) in self.modules.iter() {
+                    self.merge_into(&mut found, right)?;
+                }
+            }
+            LoaderMode::Append => {
+                for (_, right) in self.modules.iter() {
+                    self.append_into(&mut found, right)?;
+                }
+            }
+        }
+
+        if self.resolve_macros {
+            let mut statements = found.as_module().unwrap().clone();
+            resolve_macros(statements.as_mut_slice(), &mut HashMap::new(), None)?;
+            found = Value::Module(statements);
+        }
+
+        Ok(found)
     }
 }
 
@@ -643,14 +686,28 @@ fn resolve_macro(
     Ok(())
 }
 
+fn basename<P: AsRef<Path>>(path: P) -> Result<String> {
+    let file_name = path
+        .as_ref()
+        .file_name()
+        .context(error::LoaderModuleParseSnafu)?;
+    let file_name = file_name.to_str().context(error::LoaderModuleParseSnafu)?;
+    let extension = path
+        .as_ref()
+        .extension()
+        .context(error::LoaderModuleParseSnafu)?;
+    let extension = extension.to_str().context(error::LoaderModuleParseSnafu)?;
+    Ok(file_name.strip_suffix(extension).unwrap().to_string())
+}
+
 #[cfg(test)]
 mod test {
     use std::collections::HashMap;
 
     use assert_matches::assert_matches;
 
-    use crate::loader::{Loader, LoaderMode};
-    use crate::{Float, Int};
+    use crate::loader::{LoaderMode, StandardLoader};
+    use crate::{Float, Int, Loader};
 
     #[test]
     pub fn load_single() {
@@ -774,8 +831,9 @@ mod test {
                 ],
             },
         ];
-        let result = Loader::new()
+        let result = StandardLoader::new()
             .mode(LoaderMode::Single)
+            .expect("failed to set mode")
             .path("examples/example.bml")
             .expect("path detection failed")
             .load()
@@ -786,8 +844,9 @@ mod test {
 
     #[test]
     fn load_append() {
-        Loader::new()
+        StandardLoader::new()
             .mode(LoaderMode::Append)
+            .expect("failed to set mode")
             .path("examples/config_append")
             .expect("path detection failed")
             .load()

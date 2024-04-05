@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter, Write};
+use std::path::PathBuf;
 
 use base64::Engine;
 #[cfg(feature = "binary")]

@@ -13,7 +13,7 @@ mod value;
 
 /// Use standard loader settings to parse a BarkML file into a module
 pub fn from_str(input: &str) -> error::Result<Value> {
-    Loader::new().source(input).load()
+    StandardLoader::new().source(input)?.load()
 }
 
 #[cfg(feature = "binary")]

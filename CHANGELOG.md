@@ -1,3 +1,14 @@
+## 0.5.0
+
+Features:
+
+* Added Module type
+
+> Files in barkml are now loaded into a parent Value known as a Module. This allows better handling for multiple
+> file loaders
+
+* Moved definition of a configuration loader to a trait
+
 ## 0.4.1
 
 Fixes:

@@ -1,5 +1,5 @@
 use std::cmp::max;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{read_dir, File};
 use std::io::{Read, Seek};
 use std::path::Path;
@@ -339,7 +339,7 @@ pub enum LoaderMode {
 /// with user control
 pub struct StandardLoader {
     mode: LoaderMode,
-    modules: HashMap<String, Value>,
+    modules: BTreeMap<String, Value>,
     collisions: bool,
     resolve_macros: bool,
 }
@@ -353,7 +353,7 @@ impl Default for StandardLoader {
     fn default() -> Self {
         Self {
             mode: LoaderMode::Single,
-            modules: HashMap::new(),
+            modules: BTreeMap::new(),
             collisions: false,
             resolve_macros: true,
         }

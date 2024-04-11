@@ -1,3 +1,10 @@
+## 0.5.2
+
+Fixes:
+
+* Switch StandardLoader to use BTreeMap so macro resolution doesn't indeterministically fail on module order pre-merge
+  or append
+
 ## 0.5.1
 
 Fixes:

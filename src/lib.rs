@@ -13,7 +13,7 @@ mod value;
 
 /// Use standard loader settings to parse a BarkML file into a module
 pub fn from_str(input: &str) -> error::Result<Value> {
-    StandardLoader::new().source(input)?.load()
+    StandardLoader::default().source(input)?.load()
 }
 
 #[cfg(feature = "binary")]
@@ -50,6 +50,6 @@ mod test {
         let stmts = stmts.as_module().expect("was not a module");
         let encoded = encode(stmts.as_slice());
         assert!(!encoded.is_empty());
-        let decoded = decode(encoded.as_slice()).unwrap();
+        decode(encoded.as_slice()).unwrap();
     }
 }

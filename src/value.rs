@@ -1,10 +1,10 @@
 use std::collections::HashMap;
-use std::fmt::{Display, Formatter, Write};
-use std::path::PathBuf;
+use std::fmt::{Display, Formatter};
 
 use base64::Engine;
 #[cfg(feature = "binary")]
 use msgpack_simple::{Extension, MapElement, MsgPack};
+use semver::{self, VersionReq};
 use snafu::{ensure, OptionExt, ResultExt};
 
 use crate::error::{self, Result};
@@ -224,6 +224,12 @@ pub enum Value {
     /// * NONE
     /// This value type can be prefixed with a !Label
     Null(Option<String>),
+
+    /// A Version value represents a semantic version
+    Version(semver::Version, Option<String>),
+
+    /// A Require represents a semantic version requirement
+    Require(VersionReq, Option<String>),
 }
 
 macro_rules! as_fn {
@@ -340,6 +346,8 @@ impl Value {
     as_fn!(as_f64, as_f64_mut, as_f64.as_f64_mut(value: f64) where Float);
     as_fn!(as_bool, as_bool_mut, value: bool where Bool);
     as_fn!(as_label, as_label_mut, value: String where Label);
+    as_fn!(as_version, as_version_mut, value: semver::Version where Version);
+    as_fn!(as_require, as_require_mut, value: VersionReq where Require);
 
     /// Returns true if the value is a null value
     fn is_null(&self) -> bool {
@@ -437,19 +445,17 @@ impl Value {
                     .as_array()
                     .context(error::MsgPackNotExpectedSnafu)?
                     .iter()
-                    .map(|x| {
+                    .flat_map(|x| {
                         x.clone()
                             .as_string()
                             .context(error::MsgPackNotExpectedSnafu)
                     })
-                    .flatten()
                     .collect();
                 let statements: Vec<Value> = Self::find_entry(&entries, "statements")?
                     .as_array()
                     .context(error::MsgPackNotExpectedSnafu)?
                     .iter()
-                    .map(|x| Self::from_binary(x.clone()))
-                    .flatten()
+                    .flat_map(|x| Self::from_binary(x.clone()))
                     .collect();
                 Ok(Self::Block {
                     id,
@@ -468,8 +474,7 @@ impl Value {
                     .as_array()
                     .context(error::MsgPackNotExpectedSnafu)?
                     .iter()
-                    .map(|x| Self::from_binary(x.clone()))
-                    .flatten()
+                    .flat_map(|x| Self::from_binary(x.clone()))
                     .collect();
                 Ok(Self::Section { id, statements })
             }
@@ -539,13 +544,35 @@ impl Value {
                 ensure!(content.is_nil(), error::MsgPackUnsupportedSnafu);
                 Ok(Self::Null(label))
             }
+            109 => {
+                let (label, content) = Self::extract(&ext)?;
+                let version = content
+                    .as_string()
+                    .context(error::MsgPackNotExpectedSnafu)?;
+                let version =
+                    semver::Version::parse(version.as_str()).context(error::SemVerSnafu {
+                        version: version.clone(),
+                    })?;
+                Ok(Self::Version(version, label))
+            }
+            110 => {
+                let (label, content) = Self::extract(&ext)?;
+                let version = content
+                    .as_string()
+                    .context(error::MsgPackNotExpectedSnafu)?;
+                let version =
+                    semver::VersionReq::parse(version.as_str()).context(error::SemVerReqSnafu {
+                        version: version.clone(),
+                    })?;
+                Ok(Self::Require(version, label))
+            }
             _ => Err(error::Error::MsgPackUnsupported),
         }
     }
 
     /// Find a specific entry in a message pack object
     #[cfg(feature = "binary")]
-    fn find_entry(input: &Vec<MapElement>, key: &str) -> Result<MsgPack> {
+    fn find_entry(input: &[MapElement], key: &str) -> Result<MsgPack> {
         input
             .iter()
             .find_map(|x| {
@@ -802,6 +829,38 @@ impl Value {
                     },
                 ]),
             ),
+            Self::Version(version, label) => (
+                109,
+                MsgPack::Map(vec![
+                    MapElement {
+                        key: MsgPack::Int(0),
+                        value: label
+                            .as_ref()
+                            .map(|x| MsgPack::String(x.clone()))
+                            .unwrap_or(MsgPack::Nil),
+                    },
+                    MapElement {
+                        key: MsgPack::Int(1),
+                        value: MsgPack::String(version.to_string()),
+                    },
+                ]),
+            ),
+            Self::Require(version, label) => (
+                110,
+                MsgPack::Map(vec![
+                    MapElement {
+                        key: MsgPack::Int(0),
+                        value: label
+                            .as_ref()
+                            .map(|x| MsgPack::String(x.clone()))
+                            .unwrap_or(MsgPack::Nil),
+                    },
+                    MapElement {
+                        key: MsgPack::Int(1),
+                        value: MsgPack::String(version.to_string()),
+                    },
+                ]),
+            ),
             _ => return MsgPack::Nil,
         };
 
@@ -942,6 +1001,22 @@ impl ToString for Value {
                     s += format!("!{} ", label).as_str();
                 }
                 s += "null";
+                s
+            }
+            Self::Version(version, label) => {
+                let mut s = String::default();
+                if let Some(label) = label {
+                    s += format!("!{} ", label).as_str();
+                }
+                s += format!("{}", version).as_str();
+                s
+            }
+            Self::Require(version, label) => {
+                let mut s = String::default();
+                if let Some(label) = label {
+                    s += format!("!{} ", label).as_str();
+                }
+                s += version.to_string().as_str();
                 s
             }
         }

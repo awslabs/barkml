@@ -10,6 +10,16 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub))]
 pub enum Error {
+    #[snafu(display("Invalid semantic version defined '{}': {}", version, source))]
+    SemVer {
+        version: String,
+        source: semver::Error,
+    },
+    #[snafu(display("Invalid version requirement defined '{}': {}", version, source))]
+    SemVerReq {
+        version: String,
+        source: semver::Error,
+    },
     #[snafu(display("Error resolving macro, no such symbol found by path {}", path))]
     MacroNotFound { path: String },
     #[snafu(display("Error parsing BarkML file: {}", source))]

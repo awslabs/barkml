@@ -3,6 +3,9 @@ $schema = !Test "1.0.0"
 # Documentation
 number = 4
 float  = 3.14
+version = 1.2.3-beta.6
+require = ^1.3.3
+require2 = =1
 string = "foobar"
 array  = ["hello", 5, 3.14, 'single']
 object = { foo = b'YmluYXJ5c3RyaW5n', "bar" = 4 }

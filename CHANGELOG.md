@@ -8,6 +8,10 @@ Features:
 > file loaders
 
 * Moved definition of a configuration loader to a trait
+* Added Semantic Version and Version Requirement types and support
+
+> Users can now define standard semantic versions in their configuration files as well
+> as version requirements
 
 ## 0.4.1
 

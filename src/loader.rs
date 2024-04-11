@@ -6,7 +6,7 @@ use std::path::Path;
 
 use snafu::{ensure, OptionExt, ResultExt};
 
-use crate::error::{self, Error, Result};
+use crate::error::{self, Result};
 use crate::Value;
 
 /// LoaderInterface defines the shared interface for loaders
@@ -344,13 +344,13 @@ pub struct StandardLoader {
     resolve_macros: bool,
 }
 
-impl StandardLoader {
+impl Default for StandardLoader {
     /// Create a new loader with the default settings
     /// which is:
     ///   mode = Single
     ///   allow_collisions = false
     ///   resolve_macros = true
-    pub fn new() -> Self {
+    fn default() -> Self {
         Self {
             mode: LoaderMode::Single,
             modules: HashMap::new(),
@@ -358,7 +358,9 @@ impl StandardLoader {
             resolve_macros: true,
         }
     }
+}
 
+impl StandardLoader {
     fn add_from_file<P>(&mut self, path: P) -> Result<()>
     where
         P: AsRef<Path>,
@@ -831,7 +833,7 @@ mod test {
                 ],
             },
         ];
-        let result = StandardLoader::new()
+        let result = StandardLoader::default()
             .mode(LoaderMode::Single)
             .expect("failed to set mode")
             .path("examples/example.bml")
@@ -844,7 +846,7 @@ mod test {
 
     #[test]
     fn load_append() {
-        StandardLoader::new()
+        StandardLoader::default()
             .mode(LoaderMode::Append)
             .expect("failed to set mode")
             .path("examples/config_append")

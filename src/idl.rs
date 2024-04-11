@@ -1,6 +1,6 @@
 use base64::Engine;
 use snafu::ResultExt;
-use std::path::PathBuf;
+use std::collections::VecDeque;
 
 use crate::value::Value;
 use crate::{Float, Int};
@@ -124,8 +124,97 @@ peg::parser! {
             Value::Table(pairs.into_iter().collect(), l)
         }
 
+        rule number() -> u64
+            = n:$(['0'..='9']+) { n.parse().or(Err("u64")).unwrap() }
+        rule alphanumeric() -> &'input str
+            = s:$(['a'..='z'|'A'..='Z'|'0'..='9'|'-'|'.']+) { s }
+
+        rule version_core() -> VecDeque<u64>
+            = c:(number() **<3> ".") {
+            c.into()
+        }
+        rule base_version() -> semver::Version
+            = c:version_core() {
+            let mut vector = c.clone();
+            semver::Version::new(vector.pop_front().unwrap(), vector.pop_front().unwrap_or(0), vector.pop_front().unwrap_or(0))
+        }
+        rule prerelease() -> semver::Prerelease
+            = "-" p:alphanumeric() {?
+            semver::Prerelease::new(p).or(Err("bad prerelease"))
+        }
+        rule build() -> semver::BuildMetadata
+            = "+" p:alphanumeric() {?
+            semver::BuildMetadata::new(p).or(Err("bad build id"))
+        }
+        rule version() -> Value
+            = l:prefix()? v:base_version() pre:prerelease()? build:build()? {
+            let mut version = v.clone();
+            if let Some(pre) = pre {
+                version.pre = pre.clone();
+            }
+            if let Some(build) = build {
+                version.build = build.clone();
+            }
+            Value::Version(version, l)
+        }
+
+        rule operator() -> semver::Op
+            = s:$("=" / ">" / ">=" / "<" / "<=" / "~" / "^" ) {?
+            match s {
+                "=" => Ok(semver::Op::Exact),
+                ">" => Ok(semver::Op::Greater),
+                ">=" => Ok(semver::Op::GreaterEq),
+                "<" => Ok(semver::Op::Less),
+                "<=" => Ok(semver::Op::LessEq),
+                "~" => Ok(semver::Op::Tilde),
+                "^" => Ok(semver::Op::Caret),
+                _ => Err("invalid operator for version requirement")
+            }
+        }
+        rule comparitor_core() -> VecDeque<u64>
+            = c:(number() **<0,3> ".") {
+            c.into()
+        }
+
+        rule base_comparator() -> semver::Comparator
+            = o:operator() c:comparitor_core() {
+            let mut vector = c.clone();
+            semver::Comparator {
+                op: o,
+                major: vector.pop_front().unwrap(),
+                minor: vector.pop_front(),
+                patch: vector.pop_front(),
+                pre: semver::Prerelease::EMPTY,
+            }
+        }
+        rule comparator() -> semver::Comparator
+            = c:base_comparator() pre:prerelease()? {
+            let mut comparator = c.clone();
+            if let Some(pre) = pre {
+                comparator.pre = pre;
+            }
+            comparator
+        }
+        rule require() -> Value
+            = l:prefix()? c:(comparator() ++ ",") {
+            Value::Require(semver::VersionReq { comparators: c }, l)
+        }
+
         pub(crate) rule value() -> Value
-            = v:(table() / array() / macro_value() / macro_literal() / byte_value() / string_value() / float_value() / int_value() / bool_value() / null() / label_value()) {
+            = v:(
+                table() /
+                array() /
+                macro_value() /
+                macro_literal() /
+                byte_value() /
+                string_value() /
+                version() /
+                require() /
+                float_value() /
+                int_value() /
+                bool_value() /
+                null() /
+                label_value()) {
             v
         }
 

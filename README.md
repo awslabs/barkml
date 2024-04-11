@@ -120,29 +120,75 @@ foo = "bar"
 
 ### Integers
 
-All integers in BarkML are read into Rust as `i64` values.
+Integers are specified as numerical values and unless provided a suffix will be read as a signed 64-bit number.
+Numbers can be specified with precision utilizing the following suffices
+
+| Suffix | Precision        |
+|--------|------------------|
+| u8     | Unsigned 8-byte  |
+| u16    | Unsigned 16-byte |
+| u32    | Unsigned 32-byte |
+| u64    | Unsigned 64-byte |
+| i8     | Signed 8-byte    |
+| i16    | Signed 16-byte   |
+| i32    | Signed 32-byte   |
+| i64    | Signed 64-byte   |
 
 **Examples:**
 
 ```
 5
 -2
+5u32
+-2i64
 ```
 
 ### Floating Point Numbers
 
-All floating point number in BarkML are read into Rust as `f64` values. Floating point numbers
+Floating point numbers are read by default as 64-byte floating point unless one of the below suffixes are provided.
+Floating point numbers
 can be specified with exponents as well.
+
+| Suffix | Precision |
+|--------|-----------|
+| f32    | 32-byte   |
+| f64    | 64-byte   |
 
 **Examples:**
 
 ```
 3.14
+3.14f32
 -5.2
 5.2e10
 5.2e+10
 3.1e-10
 30.0E+2
+```
+
+### Semantic Versions
+
+BarkML supports inline semantic version declarations. However to prevent collision with floating
+point numbers, any semantic version must specify at least <major>.<minor>.<patch>
+
+**Examples:**
+
+```
+1.0.0
+0.1.0-beta.1
+0.1.0-prerelease-build.5
+```
+
+### Semantic Version Requirements
+
+BarkML also supports the definition of version requirements. The only exception is that currently
+the wildcard '*' support is not explicitly supported (it is still inferred when not specifying every part of version).
+You also must always specify a requirement operator in barkml.
+
+```
+>1.1
+^4
+~5.3
 ```
 
 ### String Values

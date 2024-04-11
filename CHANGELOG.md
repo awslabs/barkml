@@ -1,3 +1,9 @@
+## 0.5.1
+
+Fixes:
+
+* read_dir causing inconsistent resolution of macros with multiple configuration files
+
 ## 0.5.0
 
 Features:

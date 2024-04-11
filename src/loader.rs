@@ -408,14 +408,19 @@ impl StandardLoader {
                 if path.is_file() {
                     self.add_from_file(path)?;
                 } else {
+                    // To fix inconsistencies we need to add to sorted list
                     let dir_reader = read_dir(path).context(error::IoSnafu)?;
-
+                    let mut files = Vec::new();
                     for entry in dir_reader {
                         let entry = entry.context(error::IoSnafu)?;
                         let entry_path = entry.path();
                         if entry_path.is_file() {
-                            self.add_from_file(entry_path.clone())?;
+                            files.push(entry_path.clone());
                         }
+                    }
+                    files.sort();
+                    for file in files.iter() {
+                        self.add_from_file(file)?;
                     }
                 }
             }
@@ -484,12 +489,6 @@ impl Loader for StandardLoader {
                     self.append_into(&mut found, right)?;
                 }
             }
-        }
-
-        if self.resolve_macros {
-            let mut statements = found.as_module().unwrap().clone();
-            resolve_macros(statements.as_mut_slice(), &mut HashMap::new(), None)?;
-            found = Value::Module(statements);
         }
 
         Ok(found)

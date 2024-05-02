@@ -1,11 +1,13 @@
 use std::collections::HashMap;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Display, Formatter, Write};
+use std::hash::{Hash, Hasher};
 
 use base64::Engine;
 #[cfg(feature = "binary")]
 use msgpack_simple::{Extension, MapElement, MsgPack};
-use semver::{self, VersionReq};
+use semver::{self, Op, VersionReq};
 use snafu::{ensure, OptionExt, ResultExt};
+use uuid::Uuid;
 
 use crate::error::{self, Result};
 
@@ -66,6 +68,19 @@ impl Int {
             Self::U64(data) => *data as i64,
         }
     }
+
+    pub fn type_of(&self) -> ValueType {
+        match self {
+            Self::I8(_) => ValueType::I8,
+            Self::I16(_) => ValueType::I16,
+            Self::I32(_) => ValueType::I32,
+            Self::I64(_) => ValueType::I64,
+            Self::U8(_) => ValueType::U8,
+            Self::U16(_) => ValueType::U16,
+            Self::U32(_) => ValueType::U32,
+            Self::U64(_) => ValueType::U64,
+        }
+    }
 }
 
 impl Display for Int {
@@ -105,6 +120,13 @@ impl Float {
             Self::F64(data) => *data,
         }
     }
+
+    pub fn type_of(&self) -> ValueType {
+        match self {
+            Self::F32(_) => ValueType::F32,
+            Self::F64(_) => ValueType::F64,
+        }
+    }
 }
 
 impl Display for Float {
@@ -119,85 +141,74 @@ impl Display for Float {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Value {
+    pub(crate) uid: Uuid,
+    pub data: Box<Data>,
+    pub type_: ValueType,
+    pub id: Option<String>,
+    pub label: Option<String>,
+    pub comment: Option<String>,
+}
+
 /// A `Value` will represent a given node in a barkml file
 #[derive(Debug, Clone)]
-pub enum Value {
+pub enum Data {
     /// Modules represent a single BarkML file
-    Module(Vec<Value>),
-    /// Comments always start with #, and multiple lined comments will be appended (squashed) together
-    Comment(String),
+    Module(HashMap<String, Value>),
     /// Control statements begin with a $ and assign a value
-    Control {
-        /// Key of control statement without $
-        label: String,
-        /// Value of control statement
-        value: Box<Self>,
-    },
+    Control(Value),
     /// Any assignment whose label/identifier does not start with $ is considered a normal
     /// assignment
-    Assignment {
-        /// Key of assignment
-        label: String,
-        /// Value
-        value: Box<Self>,
-    },
+    Assignment(Value),
     /// A block is any set of values defined inside braces prefixed first by any identifier
     /// followed by 0 or more string labels
     Block {
-        /// Identifier of the block
-        id: String,
-        /// Any number of labels defined as whitespace sperated strings
         labels: Vec<String>,
-        /// Values defined inside the braces of a block
-        statements: Vec<Self>,
+        children: HashMap<String, Value>,
     },
     /// A section is defined by an identifier inside square brackets and contains
     /// any number of values defined below this identifier until end of file or another
     /// section is defined
-    Section {
-        // Identifier of the section
-        id: String,
-        // All statements/values defined below
-        statements: Vec<Self>,
-    },
+    Section(HashMap<String, Value>),
 
     /// A table is a set of string keys to values (set via =)
     /// This value type can be prefixed with a !Label
-    Table(HashMap<String, Self>, Option<String>),
+    Table(HashMap<String, Value>),
 
     /// An array of values defined inside square brackets.
     /// Arrays in BarkML can contain mixed types
     /// This value type can be prefixed with a !Label
-    Array(Vec<Self>, Option<String>),
+    Array(Vec<Value>),
 
     /// A macro string is only utilized internally as an in-place
     /// representation of a macro, its value and label will be resolved after
     /// parsing and thus there never should be a raw Macro in a resulting fully parsed
     /// BarkML file.
-    Macro(String, Option<String>, bool),
+    Macro(String, bool),
 
     /// Strings are defined either between single quotes or double quotes
     /// This value type can be prefixed with a !Label
-    String(String, Option<String>),
+    String(String),
 
     /// Bytes are a base64 encoded representation of binary data wrapped inside b'...', once the file
     /// is parsed the byte data is available decoded from this format.
     /// This value type can be prefixed with a !Label
-    Bytes(Vec<u8>, Option<String>),
+    Bytes(Vec<u8>),
 
     /// Integers are defined as any decimal value, by default
     /// they are assumed to be a 64-bit signed integer, however
     /// precision can be defined by suffixing the number with no whitespace
     /// with one of `i` (for signed integers), `u` (for unsigned integers) followed by
     /// a precision (8, 16, 32, 64 currently supported)
-    Int(Int, Option<String>),
+    Int(Int),
 
     /// Floating point numbers are defined in numerical value with optional
     /// scientific notation provided. They are assumed to be
     /// a 64-bit floating point number, however precision can be
     /// defined by suffixing the number with 'f' followed by a precision (32, 64 currently supported).
     /// This value type can be prefixed with a !Label
-    Float(Float, Option<String>),
+    Float(Float),
 
     /// Boolean values  are defined as one of the below keywords for true and false
     ///
@@ -205,7 +216,7 @@ pub enum Value {
     /// false: false, False, FALSE, no, No, No, off, Off, OFF
     ///
     /// This value type can be prefixed with a !Label
-    Bool(bool, Option<String>),
+    Bool(bool),
 
     /// A label is any identifier prefixed with a !
     /// This node will only exist when a value is a label by itself
@@ -223,27 +234,157 @@ pub enum Value {
     /// * None
     /// * NONE
     /// This value type can be prefixed with a !Label
-    Null(Option<String>),
+    Null,
 
     /// A Version value represents a semantic version
-    Version(semver::Version, Option<String>),
+    Version(semver::Version),
 
     /// A Require represents a semantic version requirement
-    Require(VersionReq, Option<String>),
+    Require(VersionReq),
+}
+
+impl Data {
+    /// Used internally to return the value as what should be used
+    /// to replace a macro in a macro string with this value
+    pub(crate) fn to_macro_string(&self) -> String {
+        match self {
+            Data::Array(children) => children
+                .iter()
+                .map(|x| x.inner().to_macro_string())
+                .collect::<Vec<String>>()
+                .join(", "),
+            Data::Bytes(bytes) => {
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes.as_slice())
+            }
+            Data::Int(value) => value.to_string(),
+            Data::Float(value) => value.to_string(),
+            Data::Bool(value) => value.to_string(),
+            Data::Label(value) => value.clone(),
+            Data::Null => "null".to_owned(),
+            Data::String(value) => value.clone(),
+            _ => String::default(),
+        }
+    }
+}
+
+/// ValueType stores the type of value
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValueType {
+    String,
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    F32,
+    F64,
+    Bytes,
+    Bool,
+    Version,
+    Require,
+    Macro,
+    Label,
+    Null,
+    Array(Vec<Self>),
+    Table(HashMap<String, Self>),
+    Section(HashMap<String, Self>),
+    Block(HashMap<String, Self>),
+    Module(HashMap<String, Self>),
+}
+
+impl Display for ValueType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::String => f.write_str("string"),
+            Self::I8 => f.write_str("i8"),
+            Self::I16 => f.write_str("i16"),
+            Self::I32 => f.write_str("i32"),
+            Self::I64 => f.write_str("i64"),
+            Self::U8 => f.write_str("u8"),
+            Self::U16 => f.write_str("u16"),
+            Self::U32 => f.write_str("u32"),
+            Self::U64 => f.write_str("u64"),
+            Self::F32 => f.write_str("f32"),
+            Self::F64 => f.write_str("f64"),
+            Self::Bytes => f.write_str("bytes"),
+            Self::Version => f.write_str("version"),
+            Self::Require => f.write_str("require"),
+            Self::Label => f.write_str("label"),
+            Self::Null => f.write_str("typeof(null)"),
+            Self::Bool => f.write_str("bool"),
+            Self::Array(body) => f.write_fmt(format_args!(
+                "array[{}]",
+                body.iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )),
+            Self::Table(content) => f.write_fmt(format_args!(
+                "table{{ {} }}",
+                content
+                    .iter()
+                    .map(|(k, v)| format!("{} : {}", k, v))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )),
+            Self::Section(content) => f.write_fmt(format_args!(
+                "section{{ {} }}",
+                content
+                    .iter()
+                    .map(|(k, v)| format!("{} : {}", k, v))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )),
+            Self::Block(content) => f.write_fmt(format_args!(
+                "block{{ {} }}",
+                content
+                    .iter()
+                    .map(|(k, v)| format!("{} : {}", k, v))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )),
+            Self::Module(content) => f.write_fmt(format_args!(
+                "module{{ {} }}",
+                content
+                    .iter()
+                    .map(|(k, v)| format!("{} : {}", k, v))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )),
+            Self::Macro => f.write_str("macro"),
+        }
+    }
+}
+
+macro_rules! hint_assert {
+    ($hint: expr, $value: expr) => {
+        if let Some(hint) = $hint.as_ref() {
+            ensure!(
+                *hint == $value.type_of(),
+                error::TypeCollisionSnafu {
+                    left: hint.clone(),
+                    right: $value.type_of(),
+                }
+            );
+        }
+    };
 }
 
 macro_rules! as_fn {
     ($fn_name: ident, $mut_name: ident, $name: ident : $ty: ty where $key: ident) => {
         pub fn $fn_name(&self) -> Option<&$ty> {
-            match self {
-                Self::$key($name,..) => Some($name),
+            match self.inner() {
+                Data::$key($name,..) => Some($name),
                 _ => None,
             }
         }
 
         pub fn $mut_name(&mut self) -> Option<&mut $ty> {
-            match self {
-                Self::$key($name,..) => Some($name),
+            match self.inner_mut() {
+                Data::$key($name,..) => Some($name),
                 _ => None,
             }
         }
@@ -252,8 +393,8 @@ macro_rules! as_fn {
 
     ($fn_name: ident, $mut_name: ident,  $chain: ident . $mut_chain: ident ( $name: ident : $ty: ty) where $key: ident) => {
         pub fn $fn_name(&self) -> Option<&$ty> {
-            match self {
-                Self::$key($name,..) => {
+            match self.inner() {
+                Data::$key($name,..) => {
                     $name.$chain()
                 },
                 _ => None,
@@ -261,8 +402,8 @@ macro_rules! as_fn {
         }
 
         pub fn $mut_name(&mut self) -> Option<&mut $ty> {
-            match self {
-                Self::$key($name,..) => {
+            match self.inner_mut() {
+                Data::$key($name,..) => {
                     $name.$mut_chain()
                 },
                 _ => None,
@@ -272,8 +413,8 @@ macro_rules! as_fn {
 
     ($fn_name: ident, $mut_name: ident,  { $($name: ident : $ty: ty),* } where $key: ident) => {
         pub fn $fn_name(&self) -> Option<($(&$ty),*)> {
-            match self {
-                Self::$key {
+            match self.inner() {
+                Data::$key {
                     $($name),*
                 } => {
                     Some(($($name),*))
@@ -283,8 +424,8 @@ macro_rules! as_fn {
         }
 
         pub fn $mut_name(&mut self) -> Option<($(&mut $ty),*)> {
-            match self {
-                Self::$key {
+            match self.inner_mut() {
+                Data::$key {
                     $($name),*
                 } => {
                     Some(($($name),*))
@@ -295,24 +436,335 @@ macro_rules! as_fn {
     };
 }
 
-impl Value {
-    /// Returns the id of a statement value or None if not a statement
-    pub fn get_id(&self) -> Option<&String> {
-        match self {
-            Self::Section { id, .. } => Some(id),
-            Self::Block { id, .. } => Some(id),
-            Self::Assignment { label, .. } => Some(label),
-            Self::Control { label, .. } => Some(label),
-            _ => None,
+macro_rules! new_number {
+    ($fn_name: ident, $variant: ident as $sub: ident : $ty: ty) => {
+        pub fn $fn_name(
+            input: $ty,
+            label: Option<String>,
+            comment: Option<String>,
+        ) -> Result<Self> {
+            Ok(Self {
+                uid: Uuid::now_v7(),
+                data: Box::new(Data::$variant($variant::$sub(input))),
+                id: None,
+                label,
+                comment,
+                type_: ValueType::$sub,
+            })
         }
+    };
+}
+
+impl Value {
+    pub fn new_module(statements: HashMap<String, Self>, comment: Option<String>) -> Result<Self> {
+        Ok(Self {
+            uid: Uuid::now_v7(),
+            data: Box::new(Data::Module(statements.clone())),
+            id: None,
+            comment,
+            label: None,
+            type_: ValueType::Module(
+                statements
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.type_of()))
+                    .collect(),
+            ),
+        })
     }
 
-    as_fn!(as_module, as_module_mut, value: Vec<Value> where Module);
-    as_fn!(as_section, as_section_mut, {id: String, statements: Vec<Value>} where Section);
-    as_fn!(as_block, as_block_mut, {id: String, labels: Vec<String>, statements: Vec<Value>} where Block);
-    as_fn!(as_assignment, as_assignment_mut, {label: String, value: Box<Value>} where Assignment);
-    as_fn!(as_control, as_control_mut, {label: String, value: Box<Value>} where Control);
-    as_fn!(as_comment, as_comment_mut, value: String where Comment);
+    pub fn new_section(
+        id: String,
+        statements: HashMap<String, Self>,
+        comment: Option<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            uid: Uuid::now_v7(),
+            data: Box::new(Data::Section(statements.clone())),
+            id: Some(id.clone()),
+            comment,
+            label: None,
+            type_: ValueType::Section(
+                statements
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.type_of()))
+                    .collect(),
+            ),
+        })
+    }
+
+    pub fn new_block(
+        id: String,
+        labels: Vec<String>,
+        statements: HashMap<String, Self>,
+        comment: Option<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            uid: Uuid::now_v7(),
+            data: Box::new(Data::Block {
+                labels,
+                children: statements.clone(),
+            }),
+            id: Some(id.clone()),
+            comment,
+            label: None,
+            type_: ValueType::Block(
+                statements
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.type_of()))
+                    .collect(),
+            ),
+        })
+    }
+
+    pub fn new_assignment(
+        id: String,
+        value: Value,
+        comment: Option<String>,
+        hint: Option<ValueType>,
+    ) -> Result<Self> {
+        hint_assert!(hint, value);
+        Ok(Self {
+            uid: Uuid::now_v7(),
+            data: Box::new(Data::Assignment(value.clone())),
+            id: Some(id),
+            comment,
+            label: None,
+            type_: hint.unwrap_or(value.type_of().clone()),
+        })
+    }
+
+    pub fn new_control(
+        id: String,
+        value: Value,
+        comment: Option<String>,
+        hint: Option<ValueType>,
+    ) -> Result<Self> {
+        hint_assert!(hint, value);
+        Ok(Self {
+            uid: Uuid::now_v7(),
+            data: Box::new(Data::Control(value.clone())),
+            id: Some(id),
+            comment,
+            label: None,
+            type_: hint.unwrap_or(value.type_of().clone()),
+        })
+    }
+
+    pub fn new_table(
+        content: HashMap<String, Self>,
+        label: Option<String>,
+        comment: Option<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            uid: Uuid::now_v7(),
+            data: Box::new(Data::Table(content.clone())),
+            id: None,
+            label,
+            comment,
+            type_: ValueType::Table(
+                content
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.type_of()))
+                    .collect(),
+            ),
+        })
+    }
+
+    pub fn new_array(
+        content: Vec<Self>,
+        label: Option<String>,
+        comment: Option<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            uid: Uuid::now_v7(),
+            data: Box::new(Data::Array(content.clone())),
+            id: None,
+            label,
+            comment,
+            type_: ValueType::Array(content.iter().map(|x| x.type_of()).collect()),
+        })
+    }
+
+    pub fn new_macro(
+        macro_string: String,
+        is_string: bool,
+        label: Option<String>,
+        comment: Option<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            uid: Uuid::now_v7(),
+            data: Box::new(Data::Macro(macro_string, is_string)),
+            id: None,
+            label,
+            comment,
+            type_: ValueType::Macro,
+        })
+    }
+
+    pub fn new_string(
+        input: String,
+        label: Option<String>,
+        comment: Option<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            uid: Uuid::now_v7(),
+            data: Box::new(Data::String(input)),
+            id: None,
+            label,
+            comment,
+            type_: ValueType::String,
+        })
+    }
+
+    pub fn new_bytes(
+        input: Vec<u8>,
+        label: Option<String>,
+        comment: Option<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            uid: Uuid::now_v7(),
+            data: Box::new(Data::Bytes(input)),
+            id: None,
+            label,
+            comment,
+            type_: ValueType::Bytes,
+        })
+    }
+
+    pub fn new_precise_int(
+        input: Int,
+        label: Option<String>,
+        comment: Option<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            uid: Uuid::now_v7(),
+            data: Box::new(Data::Int(input.clone())),
+            id: None,
+            label,
+            comment,
+            type_: input.type_of(),
+        })
+    }
+
+    pub fn new_precise_float(
+        input: Float,
+        label: Option<String>,
+        comment: Option<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            uid: Uuid::now_v7(),
+            data: Box::new(Data::Float(input.clone())),
+            id: None,
+            label,
+            comment,
+            type_: input.type_of(),
+        })
+    }
+
+    new_number!(new_int, Int as I64 : i64);
+    new_number!(new_i8, Int as I8 : i8);
+    new_number!(new_i16, Int as I16 : i16);
+    new_number!(new_i32, Int as I32 : i32);
+    new_number!(new_i64, Int as I64 : i64);
+    new_number!(new_u8, Int as U8 : u8);
+    new_number!(new_u16, Int as U16 : u16);
+    new_number!(new_u32, Int as U32 : u32);
+    new_number!(new_u64, Int as U64 : u64);
+    new_number!(new_float, Float as F64 : f64);
+    new_number!(new_f32, Float as F32 : f32);
+    new_number!(new_f64, Float as F64 : f64);
+
+    pub fn new_null(label: Option<String>, comment: Option<String>) -> Result<Self> {
+        Ok(Self {
+            uid: Uuid::now_v7(),
+            data: Box::new(Data::Null),
+            id: None,
+            label,
+            comment,
+            type_: ValueType::Null,
+        })
+    }
+
+    pub fn new_bool(value: bool, label: Option<String>, comment: Option<String>) -> Result<Self> {
+        Ok(Self {
+            uid: Uuid::now_v7(),
+            data: Box::new(Data::Bool(value)),
+            id: None,
+            label,
+            comment,
+            type_: ValueType::Bool,
+        })
+    }
+
+    pub fn new_label(value: String, comment: Option<String>) -> Result<Self> {
+        Ok(Self {
+            uid: Uuid::now_v7(),
+            data: Box::new(Data::Label(value)),
+            id: None,
+            label: None,
+            comment,
+            type_: ValueType::Label,
+        })
+    }
+
+    pub fn new_version(
+        value: semver::Version,
+        label: Option<String>,
+        comment: Option<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            uid: Uuid::now_v7(),
+            data: Box::new(Data::Version(value)),
+            id: None,
+            label,
+            comment,
+            type_: ValueType::Version,
+        })
+    }
+
+    pub fn new_require(
+        value: VersionReq,
+        label: Option<String>,
+        comment: Option<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            uid: Uuid::now_v7(),
+            data: Box::new(Data::Require(value)),
+            id: None,
+            label,
+            comment,
+            type_: ValueType::Require,
+        })
+    }
+
+    pub fn id(&self) -> Option<String> {
+        self.id.clone()
+    }
+
+    pub fn type_of(&self) -> ValueType {
+        self.type_.clone()
+    }
+
+    pub fn inner(&self) -> &Data {
+        &self.data
+    }
+
+    pub fn inner_mut(&mut self) -> &mut Data {
+        &mut self.data
+    }
+
+    /// Returns the id of a statement value or None if not a statement
+    pub fn get_id(&self) -> Option<&String> {
+        self.id.as_ref()
+    }
+
+    /// Returns the type of the current value
+
+    as_fn!(as_module, as_module_mut, value: HashMap<String, Value> where Module);
+    as_fn!(as_section, as_section_mut, value: HashMap<String, Value> where Section);
+    as_fn!(as_block, as_block_mut, {labels: Vec<String>, children: HashMap<String, Value>} where Block);
+    as_fn!(as_assignment, as_assignment_mut, value: Value where Assignment);
+    as_fn!(as_control, as_control_mut, value: Value where Control);
     as_fn!(as_table, as_table_mut, value: HashMap<String, Value> where Table);
     as_fn!(as_array, as_array_mut, value: Vec<Value> where Array);
     as_fn!(as_macro, as_macro_mut, value: String where Macro);
@@ -320,8 +772,8 @@ impl Value {
     as_fn!(as_bytes, as_bytes_mut, value: Vec<u8> where Bytes);
 
     pub fn as_int(&self) -> Option<i64> {
-        match self {
-            Self::Int(int, ..) => Some(int.as_int()),
+        match self.inner() {
+            Data::Int(int, ..) => Some(int.as_int()),
             _ => None,
         }
     }
@@ -336,8 +788,8 @@ impl Value {
     as_fn!(as_u64, as_u64_mut, as_u64.as_u64_mut(value: u64) where Int);
 
     pub fn as_float(&self) -> Option<f64> {
-        match self {
-            Self::Float(float, ..) => Some(float.as_float()),
+        match self.inner() {
+            Data::Float(float, ..) => Some(float.as_float()),
             _ => None,
         }
     }
@@ -351,97 +803,84 @@ impl Value {
 
     /// Returns true if the value is a null value
     fn is_null(&self) -> bool {
-        matches!(self, Self::Null(_))
+        matches!(self.inner(), Data::Null)
     }
 
-    /// Used internally to adjust the label of a node
-    pub(crate) fn set_label(&mut self, value: &str) {
-        match self {
-            Self::Table(_, ref mut label) => *label = Some(value.to_owned()),
-            Self::Array(_, ref mut label) => *label = Some(value.to_owned()),
-            Self::String(_, ref mut label) => *label = Some(value.to_owned()),
-            Self::Macro(_, ref mut label, _) => *label = Some(value.to_owned()),
-            Self::Bytes(_, ref mut label) => *label = Some(value.to_owned()),
-            Self::Int(_, ref mut label) => *label = Some(value.to_owned()),
-            Self::Float(_, ref mut label) => *label = Some(value.to_owned()),
-            Self::Bool(_, ref mut label) => *label = Some(value.to_owned()),
-            Self::Label(ref mut label) => *label = value.to_owned(),
-            Self::Null(ref mut label) => *label = Some(value.to_owned()),
-            _ => {}
-        }
+    /// Change the label on this value
+    pub fn set_label(&mut self, label: &str) {
+        self.label = Some(label.to_string());
     }
 
-    /// Used internally to return the value as what should be used
-    /// to replace a macro in a macro string with this value
-    pub(crate) fn to_macro_string(&self) -> String {
-        match self {
-            Self::Table(..) => self.to_string(),
-            Self::Array(children, _) => children
-                .iter()
-                .map(|x| x.to_macro_string())
-                .collect::<Vec<String>>()
-                .join(", "),
-            Self::Bytes(bytes, _) => {
-                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes.as_slice())
-            }
-            Self::Int(value, _) => value.to_string(),
-            Self::Float(value, _) => value.to_string(),
-            Self::Bool(value, _) => value.to_string(),
-            Self::Label(value) => value.clone(),
-            Self::Null(_) => "null".to_owned(),
-            Self::Macro(..) => self.to_string(),
-            Self::String(value, _) => value.clone(),
-            _ => String::default(),
-        }
+    /// Remove label
+    pub fn remove_label(&mut self) {
+        self.label = None;
     }
 
     /// Read the value from a message pack encoded binary object
     #[cfg(feature = "binary")]
     pub fn from_binary(entry: MsgPack) -> Result<Self> {
-        let ext = entry
-            .as_extension()
-            .context(error::MsgPackNotExpectedSnafu)?;
-        match ext.type_id {
+        let parent = entry.as_map().context(error::MsgPackNotExpectedSnafu)?;
+
+        let id = if let Some(id) = Self::find_entry(parent.as_slice(), "id") {
+            Some(id.as_string().context(error::MsgPackNotExpectedSnafu)?)
+        } else {
+            None
+        };
+        let label = if let Some(label) = Self::find_entry(parent.as_slice(), "label") {
+            Some(label.as_string().context(error::MsgPackNotExpectedSnafu)?)
+        } else {
+            None
+        };
+        let comment = if let Some(comment) = Self::find_entry(parent.as_slice(), "comment") {
+            Some(
+                comment
+                    .as_string()
+                    .context(error::MsgPackNotExpectedSnafu)?,
+            )
+        } else {
+            None
+        };
+        let ext = if let Some(data) = Self::find_entry(parent.as_slice(), "data") {
+            data.as_extension().context(error::MsgPackNotExpectedSnafu)
+        } else {
+            Err(error::Error::MsgPackUnsupported)
+        }?;
+
+        let value = MsgPack::parse(ext.value.as_slice()).context(error::MsgPackEncodedSnafu)?;
+        let (data, value_type) = match ext.type_id {
             0 => {
-                let value =
-                    MsgPack::parse(ext.value.as_slice()).context(error::MsgPackEncodedSnafu)?;
-                let comment = value.as_string().context(error::MsgPackNotExpectedSnafu)?;
-                Ok(Self::Comment(comment))
+                let entries = value.as_map().context(error::MsgPackNotExpectedSnafu)?;
+                let statements: HashMap<String, Value> = entries
+                    .iter()
+                    .map(|x| {
+                        (
+                            x.key.clone().as_string().unwrap().clone(),
+                            Self::from_binary(x.value.clone()).unwrap(),
+                        )
+                    })
+                    .collect();
+                (
+                    Data::Module(statements.clone()),
+                    ValueType::Module(
+                        statements
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.type_of()))
+                            .collect(),
+                    ),
+                )
             }
             1 => {
-                let value =
-                    MsgPack::parse(ext.value.as_slice()).context(error::MsgPackEncodedSnafu)?;
-                let entries = value.as_map().context(error::MsgPackNotExpectedSnafu)?;
-                let label = Self::find_entry(&entries, "label")?
-                    .as_string()
-                    .context(error::MsgPackNotExpectedSnafu)?;
-                let value = Value::from_binary(Self::find_entry(&entries, "value")?)?;
-                Ok(Self::Control {
-                    label,
-                    value: Box::new(value),
-                })
+                let value = Value::from_binary(value)?;
+                (Data::Control(value.clone()), value.type_of())
             }
             2 => {
-                let value =
-                    MsgPack::parse(ext.value.as_slice()).context(error::MsgPackEncodedSnafu)?;
-                let entries = value.as_map().context(error::MsgPackNotExpectedSnafu)?;
-                let label = Self::find_entry(&entries, "label")?
-                    .as_string()
-                    .context(error::MsgPackNotExpectedSnafu)?;
-                let value = Value::from_binary(Self::find_entry(&entries, "value")?)?;
-                Ok(Self::Assignment {
-                    label,
-                    value: Box::new(value),
-                })
+                let value = Value::from_binary(value)?;
+                (Data::Assignment(value.clone()), value.type_of())
             }
             3 => {
-                let value =
-                    MsgPack::parse(ext.value.as_slice()).context(error::MsgPackEncodedSnafu)?;
                 let entries = value.as_map().context(error::MsgPackNotExpectedSnafu)?;
-                let id = Self::find_entry(&entries, "id")?
-                    .as_string()
-                    .context(error::MsgPackNotExpectedSnafu)?;
-                let labels: Vec<String> = Self::find_entry(&entries, "labels")?
+                let labels: Vec<String> = Self::find_entry(&entries, "labels")
+                    .context(error::MsgPackUnsupportedSnafu)?
                     .as_array()
                     .context(error::MsgPackNotExpectedSnafu)?
                     .iter()
@@ -451,36 +890,54 @@ impl Value {
                             .context(error::MsgPackNotExpectedSnafu)
                     })
                     .collect();
-                let statements: Vec<Value> = Self::find_entry(&entries, "statements")?
-                    .as_array()
+                let statements: HashMap<String, Value> = Self::find_entry(&entries, "statements")
+                    .context(error::MsgPackUnsupportedSnafu)?
+                    .as_map()
                     .context(error::MsgPackNotExpectedSnafu)?
                     .iter()
-                    .flat_map(|x| Self::from_binary(x.clone()))
+                    .map(|x| {
+                        (
+                            x.key.clone().as_string().unwrap(),
+                            Self::from_binary(x.value.clone()).unwrap(),
+                        )
+                    })
                     .collect();
-                Ok(Self::Block {
-                    id,
-                    labels,
-                    statements,
-                })
+                (
+                    Data::Block {
+                        labels,
+                        children: statements.clone(),
+                    },
+                    ValueType::Block(
+                        statements
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.type_of()))
+                            .collect(),
+                    ),
+                )
             }
             4 => {
-                let value =
-                    MsgPack::parse(ext.value.as_slice()).context(error::MsgPackEncodedSnafu)?;
                 let entries = value.as_map().context(error::MsgPackNotExpectedSnafu)?;
-                let id = Self::find_entry(&entries, "id")?
-                    .as_string()
-                    .context(error::MsgPackNotExpectedSnafu)?;
-                let statements: Vec<Value> = Self::find_entry(&entries, "statements")?
-                    .as_array()
-                    .context(error::MsgPackNotExpectedSnafu)?
+                let statements: HashMap<String, Value> = entries
                     .iter()
-                    .flat_map(|x| Self::from_binary(x.clone()))
+                    .map(|x| {
+                        (
+                            x.key.clone().as_string().unwrap(),
+                            Self::from_binary(x.value.clone()).unwrap(),
+                        )
+                    })
                     .collect();
-                Ok(Self::Section { id, statements })
+                (
+                    Data::Section(statements.clone()),
+                    ValueType::Section(
+                        statements
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.type_of()))
+                            .collect(),
+                    ),
+                )
             }
             100 => {
-                let (label, content) = Self::extract(&ext)?;
-                let content = content.as_map().context(error::MsgPackNotExpectedSnafu)?;
+                let content = value.as_map().context(error::MsgPackNotExpectedSnafu)?;
                 let mut table_content = HashMap::new();
                 for entry in content.iter() {
                     let key = entry
@@ -491,182 +948,129 @@ impl Value {
                     let value = Self::from_binary(entry.value.clone())?;
                     table_content.insert(key, value);
                 }
-                Ok(Self::Table(table_content, label))
+                (
+                    Data::Table(table_content.clone()),
+                    ValueType::Table(
+                        table_content
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.type_of()))
+                            .collect(),
+                    ),
+                )
             }
             101 => {
-                let (label, content) = Self::extract(&ext)?;
-                let content = content.as_array().context(error::MsgPackNotExpectedSnafu)?;
+                let content = value.as_array().context(error::MsgPackNotExpectedSnafu)?;
                 let mut array_content = Vec::new();
                 for entry in content.iter() {
                     array_content.push(Self::from_binary(entry.clone())?);
                 }
-                Ok(Self::Array(array_content, label))
+                (
+                    Data::Array(array_content.clone()),
+                    ValueType::Array(array_content.iter().map(|x| x.type_of()).collect()),
+                )
             }
             102 => {
-                let (label, content) = Self::extract(&ext)?;
-                let value = content
-                    .as_string()
-                    .context(error::MsgPackNotExpectedSnafu)?;
-                Ok(Self::String(value, label))
+                let value = value.as_string().context(error::MsgPackNotExpectedSnafu)?;
+                (Data::String(value), ValueType::String)
             }
             103 => {
-                let (label, content) = Self::extract(&ext)?;
-                let value = content
-                    .as_binary()
-                    .context(error::MsgPackNotExpectedSnafu)?;
-                Ok(Self::Bytes(value, label))
+                let value = value.as_binary().context(error::MsgPackNotExpectedSnafu)?;
+                (Data::Bytes(value), ValueType::Bytes)
             }
             104 => {
-                let (label, content) = Self::extract(&ext)?;
-                let value = content.as_int().context(error::MsgPackNotExpectedSnafu)?;
-                Ok(Self::Int(Int::I64(value), label))
+                let value = value.as_int().context(error::MsgPackNotExpectedSnafu)?;
+                (Data::Int(Int::I64(value)), ValueType::I64)
             }
             105 => {
-                let (label, content) = Self::extract(&ext)?;
-                let value = content.as_float().context(error::MsgPackNotExpectedSnafu)?;
-                Ok(Self::Float(Float::F64(value), label))
+                let value = value.as_float().context(error::MsgPackNotExpectedSnafu)?;
+                (Data::Float(Float::F64(value)), ValueType::F64)
             }
             106 => {
-                let (label, content) = Self::extract(&ext)?;
-                let value = content
-                    .as_boolean()
-                    .context(error::MsgPackNotExpectedSnafu)?;
-                Ok(Self::Bool(value, label))
+                let value = value.as_boolean().context(error::MsgPackNotExpectedSnafu)?;
+                (Data::Bool(value), ValueType::Bool)
             }
             107 => {
-                let label = MsgPack::parse(ext.value.clone().as_slice())
-                    .context(error::MsgPackEncodedSnafu)?;
-                let label = label.as_string().context(error::MsgPackNotExpectedSnafu)?;
-                Ok(Self::Label(label))
+                let label = value.as_string().context(error::MsgPackNotExpectedSnafu)?;
+                (Data::Label(label), ValueType::Label)
             }
             108 => {
-                let (label, content) = Self::extract(&ext)?;
-                ensure!(content.is_nil(), error::MsgPackUnsupportedSnafu);
-                Ok(Self::Null(label))
+                ensure!(value.is_nil(), error::MsgPackUnsupportedSnafu);
+                (Data::Null, ValueType::Null)
             }
             109 => {
-                let (label, content) = Self::extract(&ext)?;
-                let version = content
-                    .as_string()
-                    .context(error::MsgPackNotExpectedSnafu)?;
+                let version = value.as_string().context(error::MsgPackNotExpectedSnafu)?;
                 let version =
                     semver::Version::parse(version.as_str()).context(error::SemVerSnafu {
                         version: version.clone(),
                     })?;
-                Ok(Self::Version(version, label))
+                (Data::Version(version), ValueType::Version)
             }
             110 => {
-                let (label, content) = Self::extract(&ext)?;
-                let version = content
-                    .as_string()
-                    .context(error::MsgPackNotExpectedSnafu)?;
+                let version = value.as_string().context(error::MsgPackNotExpectedSnafu)?;
                 let version =
                     semver::VersionReq::parse(version.as_str()).context(error::SemVerReqSnafu {
                         version: version.clone(),
                     })?;
-                Ok(Self::Require(version, label))
+                (Data::Require(version), ValueType::Require)
             }
-            _ => Err(error::Error::MsgPackUnsupported),
-        }
+            _ => {
+                return error::MsgPackUnsupportedSnafu.fail();
+            }
+        };
+        Ok(Self {
+            uid: Uuid::now_v7(),
+            id,
+            label,
+            comment,
+            data: Box::new(data),
+            type_: value_type,
+        })
     }
 
     /// Find a specific entry in a message pack object
     #[cfg(feature = "binary")]
-    fn find_entry(input: &[MapElement], key: &str) -> Result<MsgPack> {
-        input
-            .iter()
-            .find_map(|x| {
-                if let Ok(label) = x.key.clone().as_string() {
-                    if label == key {
-                        Some(x.value.clone())
-                    } else {
-                        None
-                    }
+    fn find_entry(input: &[MapElement], key: &str) -> Option<MsgPack> {
+        input.iter().find_map(|x| {
+            if let Ok(label) = x.key.clone().as_string() {
+                if label == key {
+                    Some(x.value.clone())
                 } else {
                     None
                 }
-            })
-            .context(error::MsgPackUnsupportedSnafu)
-    }
-
-    /// Extract a value encoded with a label from a MsgPack
-    /// extension object
-    #[cfg(feature = "binary")]
-    fn extract(entry: &Extension) -> Result<(Option<String>, MsgPack)> {
-        let table =
-            MsgPack::parse(entry.value.clone().as_slice()).context(error::MsgPackEncodedSnafu)?;
-        let table = table.as_map().context(error::MsgPackNotExpectedSnafu)?;
-        // There should only be two entries in this encoding
-        ensure!(table.len() == 2, error::MsgPackUnsupportedSnafu);
-        let (key0, value0, value1) = (
-            table[0]
-                .key
-                .clone()
-                .as_int()
-                .context(error::MsgPackNotExpectedSnafu)?,
-            table[0].value.clone(),
-            table[1].value.clone(),
-        );
-        let label = if key0 == 0 {
-            value0.clone()
-        } else {
-            value1.clone()
-        };
-        let label = if label.is_nil() {
-            None
-        } else {
-            Some(label.as_string().context(error::MsgPackNotExpectedSnafu)?)
-        };
-        let content = if key0 == 1 {
-            value0.clone()
-        } else {
-            value1.clone()
-        };
-        Ok((label, content))
+            } else {
+                None
+            }
+        })
     }
 
     /// Convert this value into a message pack encoded
     /// binary value.
     #[cfg(feature = "binary")]
     pub fn to_binary(&self) -> MsgPack {
-        let (type_id, value) = match self {
-            Self::Comment(value) => (0, MsgPack::String(value.clone())),
-            Self::Control { label, value } => (
+        let (type_id, value) = match self.inner() {
+            Data::Module(value) => (
                 1,
-                MsgPack::Map(vec![
-                    MapElement {
-                        key: MsgPack::String("label".to_string()),
-                        value: MsgPack::String(label.clone()),
-                    },
-                    MapElement {
-                        key: MsgPack::String("value".to_string()),
-                        value: value.to_binary(),
-                    },
-                ]),
+                MsgPack::Map(
+                    value
+                        .values()
+                        .map(|x| MapElement {
+                            key: MsgPack::String(x.id().unwrap()),
+                            value: x.to_binary(),
+                        })
+                        .collect(),
+                ),
             ),
-            Self::Assignment { label, value } => (
-                2,
-                MsgPack::Map(vec![
-                    MapElement {
-                        key: MsgPack::String("label".to_string()),
-                        value: MsgPack::String(label.clone()),
-                    },
-                    MapElement {
-                        key: MsgPack::String("value".to_string()),
-                        value: value.to_binary(),
-                    },
-                ]),
-            ),
-            Self::Block {
-                id,
+            Data::Control(value) => (1, value.to_binary()),
+            Data::Assignment(value) => (2, value.to_binary()),
+            Data::Block {
                 labels,
-                statements,
+                children: statements,
             } => (
                 3,
                 MsgPack::Map(vec![
                     MapElement {
                         key: MsgPack::String("id".to_string()),
-                        value: MsgPack::String(id.clone()),
+                        value: MsgPack::String(self.id.clone().unwrap()),
                     },
                     MapElement {
                         key: MsgPack::String("labels".to_string()),
@@ -676,29 +1080,46 @@ impl Value {
                     },
                     MapElement {
                         key: MsgPack::String("statements".to_string()),
-                        value: MsgPack::Array(statements.iter().map(|x| x.to_binary()).collect()),
+                        value: MsgPack::Map(
+                            statements
+                                .iter()
+                                .map(|(k, v)| MapElement {
+                                    key: MsgPack::String(k.clone()),
+                                    value: v.to_binary(),
+                                })
+                                .collect(),
+                        ),
                     },
                 ]),
             ),
-            Self::Section { id, statements } => (
+            Data::Section(statements) => (
                 4,
                 MsgPack::Map(vec![
                     MapElement {
                         key: MsgPack::String("id".to_string()),
-                        value: MsgPack::String(id.clone()),
+                        value: MsgPack::String(self.id.clone().unwrap()),
                     },
                     MapElement {
                         key: MsgPack::String("statements".to_string()),
-                        value: MsgPack::Array(statements.iter().map(|x| x.to_binary()).collect()),
+                        value: MsgPack::Map(
+                            statements
+                                .iter()
+                                .map(|(k, v)| MapElement {
+                                    key: MsgPack::String(k.clone()),
+                                    value: v.to_binary(),
+                                })
+                                .collect(),
+                        ),
                     },
                 ]),
             ),
-            Self::Table(data, label) => (
+            Data::Table(data) => (
                 100,
                 MsgPack::Map(vec![
                     MapElement {
                         key: MsgPack::Int(0),
-                        value: label
+                        value: self
+                            .label
                             .as_ref()
                             .map(|x| MsgPack::String(x.clone()))
                             .unwrap_or(MsgPack::Nil),
@@ -716,12 +1137,13 @@ impl Value {
                     },
                 ]),
             ),
-            Self::Array(data, label) => (
+            Data::Array(data) => (
                 101,
                 MsgPack::Map(vec![
                     MapElement {
                         key: MsgPack::Int(0),
-                        value: label
+                        value: self
+                            .label
                             .as_ref()
                             .map(|x| MsgPack::String(x.clone()))
                             .unwrap_or(MsgPack::Nil),
@@ -732,12 +1154,13 @@ impl Value {
                     },
                 ]),
             ),
-            Self::String(data, label) => (
+            Data::String(data) => (
                 102,
                 MsgPack::Map(vec![
                     MapElement {
                         key: MsgPack::Int(0),
-                        value: label
+                        value: self
+                            .label
                             .as_ref()
                             .map(|x| MsgPack::String(x.clone()))
                             .unwrap_or(MsgPack::Nil),
@@ -748,12 +1171,13 @@ impl Value {
                     },
                 ]),
             ),
-            Self::Bytes(data, label) => (
+            Data::Bytes(data) => (
                 103,
                 MsgPack::Map(vec![
                     MapElement {
                         key: MsgPack::Int(0),
-                        value: label
+                        value: self
+                            .label
                             .as_ref()
                             .map(|x| MsgPack::String(x.clone()))
                             .unwrap_or(MsgPack::Nil),
@@ -764,12 +1188,13 @@ impl Value {
                     },
                 ]),
             ),
-            Self::Int(data, label) => (
+            Data::Int(data) => (
                 104,
                 MsgPack::Map(vec![
                     MapElement {
                         key: MsgPack::Int(0),
-                        value: label
+                        value: self
+                            .label
                             .as_ref()
                             .map(|x| MsgPack::String(x.clone()))
                             .unwrap_or(MsgPack::Nil),
@@ -780,12 +1205,13 @@ impl Value {
                     },
                 ]),
             ),
-            Self::Float(data, label) => (
+            Data::Float(data) => (
                 105,
                 MsgPack::Map(vec![
                     MapElement {
                         key: MsgPack::Int(0),
-                        value: label
+                        value: self
+                            .label
                             .as_ref()
                             .map(|x| MsgPack::String(x.clone()))
                             .unwrap_or(MsgPack::Nil),
@@ -796,12 +1222,13 @@ impl Value {
                     },
                 ]),
             ),
-            Self::Bool(data, label) => (
+            Data::Bool(data) => (
                 106,
                 MsgPack::Map(vec![
                     MapElement {
                         key: MsgPack::Int(0),
-                        value: label
+                        value: self
+                            .label
                             .as_ref()
                             .map(|x| MsgPack::String(x.clone()))
                             .unwrap_or(MsgPack::Nil),
@@ -812,13 +1239,14 @@ impl Value {
                     },
                 ]),
             ),
-            Self::Label(data) => (107, MsgPack::String(data.clone())),
-            Self::Null(label) => (
+            Data::Label(data) => (107, MsgPack::String(data.clone())),
+            Data::Null => (
                 108,
                 MsgPack::Map(vec![
                     MapElement {
                         key: MsgPack::Int(0),
-                        value: label
+                        value: self
+                            .label
                             .as_ref()
                             .map(|x| MsgPack::String(x.clone()))
                             .unwrap_or(MsgPack::Nil),
@@ -829,12 +1257,13 @@ impl Value {
                     },
                 ]),
             ),
-            Self::Version(version, label) => (
+            Data::Version(version) => (
                 109,
                 MsgPack::Map(vec![
                     MapElement {
                         key: MsgPack::Int(0),
-                        value: label
+                        value: self
+                            .label
                             .as_ref()
                             .map(|x| MsgPack::String(x.clone()))
                             .unwrap_or(MsgPack::Nil),
@@ -845,12 +1274,13 @@ impl Value {
                     },
                 ]),
             ),
-            Self::Require(version, label) => (
+            Data::Require(version) => (
                 110,
                 MsgPack::Map(vec![
                     MapElement {
                         key: MsgPack::Int(0),
-                        value: label
+                        value: self
+                            .label
                             .as_ref()
                             .map(|x| MsgPack::String(x.clone()))
                             .unwrap_or(MsgPack::Nil),
@@ -871,48 +1301,45 @@ impl Value {
     }
 }
 
-impl ToString for Value {
-    fn to_string(&self) -> String {
-        match self {
-            Self::Module(children) => children
+impl Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let str = match self.inner() {
+            Data::Module(children) => children
                 .iter()
-                .map(|x| x.to_string())
+                .map(|x| x.1.to_string())
                 .collect::<Vec<String>>()
                 .join("\n"),
-            Self::Comment(comment) => format!("# {}", comment),
-            Self::Control { label, value } => format!("${} = {}", label, value.to_string()),
-            Self::Assignment { label, value } => format!("{} = {}", label, value.to_string()),
-            Self::Block {
-                id,
+            Data::Control(value) => format!("${} = {}", self.id().unwrap(), value.to_string()),
+            Data::Assignment(value) => format!("{} = {}", self.id().unwrap(), value.to_string()),
+            Data::Block {
                 labels,
-                statements,
+                children: statements,
             } => {
-                let mut s = format!("{} ", id);
+                let mut s = format!("{} ", self.id().unwrap());
                 for label in labels {
                     s.push_str(&format!("'{}' ", label));
                 }
                 s.push('{');
                 for statement in statements {
-                    s.push_str(&format!("\n\t{}", statement.to_string()));
+                    s.push_str(&format!("\n\t{}", statement.1.to_string()));
                 }
                 s.push_str("\n}");
                 s
             }
-            Self::Section { id, statements } => {
-                let mut s = format!("[{}]", id);
+            Data::Section(statements) => {
+                let mut s = format!("[{}]", self.id().unwrap());
                 for statement in statements {
-                    s.push_str(&format!("\n{}", statement.to_string()));
+                    s.push_str(&format!("\n{}", statement.1.to_string()));
                 }
                 s
             }
-            Self::Table(map, label) => {
+            Data::Table(map) => {
                 let mut s = String::default();
-                if let Some(label) = label {
+                if let Some(label) = self.label.as_ref() {
                     s += format!("!{} ", label).as_str();
                 }
                 s += "{ ";
-                for index in 0..map.len() {
-                    let (key, value) = map.iter().nth(index).unwrap();
+                for (index, (key, value)) in map.iter().enumerate() {
                     s += format!("{} = {} ", key, value.to_string()).as_str();
                     if index != map.len() - 1 {
                         s += ", ";
@@ -921,9 +1348,9 @@ impl ToString for Value {
                 s += " }";
                 s
             }
-            Self::Array(array, label) => {
+            Data::Array(array) => {
                 let mut s = String::default();
-                if let Some(label) = label {
+                if let Some(label) = self.label.as_ref() {
                     s += format!("!{} ", label).as_str();
                 }
                 s += format!(
@@ -937,17 +1364,17 @@ impl ToString for Value {
                 .as_str();
                 s
             }
-            Self::String(string, label) => {
+            Data::String(string) => {
                 let mut s = String::default();
-                if let Some(label) = label {
+                if let Some(label) = self.label.as_ref() {
                     s += format!("!{} ", label).as_str();
                 }
                 s += format!("'{}'", string).as_str();
                 s
             }
-            Self::Macro(string, label, is_string) => {
+            Data::Macro(string, is_string) => {
                 let mut s = String::default();
-                if let Some(label) = label {
+                if let Some(label) = self.label.as_ref() {
                     s += format!("!{} ", label).as_str();
                 }
                 let m = if *is_string {
@@ -958,9 +1385,9 @@ impl ToString for Value {
                 s += m.as_str();
                 s
             }
-            Self::Bytes(bytes, label) => {
+            Data::Bytes(bytes) => {
                 let mut s = String::default();
-                if let Some(label) = label {
+                if let Some(label) = self.label.as_ref() {
                     s += format!("!{} ", label).as_str();
                 }
                 let encoded =
@@ -968,57 +1395,58 @@ impl ToString for Value {
                 s += format!("b'{}'", encoded).as_str();
                 s
             }
-            Self::Int(int, label) => {
+            Data::Int(int) => {
                 let mut s = String::default();
-                if let Some(label) = label {
+                if let Some(label) = self.label.as_ref() {
                     s += format!("!{} ", label).as_str();
                 }
                 s += int.to_string().as_str();
                 s
             }
-            Self::Float(float, label) => {
+            Data::Float(float) => {
                 let mut s = String::default();
-                if let Some(label) = label {
+                if let Some(label) = self.label.as_ref() {
                     s += format!("!{} ", label).as_str();
                 }
                 s += float.to_string().as_str();
                 s
             }
-            Self::Bool(boolean, label) => {
+            Data::Bool(boolean) => {
                 let mut s = String::default();
-                if let Some(label) = label {
+                if let Some(label) = self.label.as_ref() {
                     s += format!("!{} ", label).as_str();
                 }
                 s += if *boolean { "true" } else { "false" };
                 s
             }
-            Self::Label(label) => {
+            Data::Label(label) => {
                 format!("!{}", label)
             }
-            Self::Null(label) => {
+            Data::Null => {
                 let mut s = String::default();
-                if let Some(label) = label {
+                if let Some(label) = self.label.as_ref() {
                     s += format!("!{} ", label).as_str();
                 }
                 s += "null";
                 s
             }
-            Self::Version(version, label) => {
+            Data::Version(version) => {
                 let mut s = String::default();
-                if let Some(label) = label {
+                if let Some(label) = self.label.as_ref() {
                     s += format!("!{} ", label).as_str();
                 }
                 s += format!("{}", version).as_str();
                 s
             }
-            Self::Require(version, label) => {
+            Data::Require(version) => {
                 let mut s = String::default();
-                if let Some(label) = label {
+                if let Some(label) = self.label.as_ref() {
                     s += format!("!{} ", label).as_str();
                 }
                 s += version.to_string().as_str();
                 s
             }
-        }
+        };
+        write!(f, "{}", str)
     }
 }

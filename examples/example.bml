@@ -2,7 +2,7 @@ $schema = !Test "1.0.0"
 [section-a]
 # Documentation
 number = 4
-float  = 3.14
+float: f32 = 3.14f32
 version = 1.2.3-beta.6
 require = ^1.3.3
 require2 = =1

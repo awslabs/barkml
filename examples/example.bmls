@@ -1,0 +1,27 @@
+$schema = !Schema 1.0.0
+[Test]
+# Major Version family
+major "1" {
+    # Define the base schema here
+    schema {
+        # Using sections will define how each section that doesn't match a specific label is defined
+        sections {
+            $key: string,
+            number: int,
+            float: float,
+            version: version?,
+            require: require?,
+            require2: require?,
+            string: string,
+            array: array[string, int, float, string],
+            object: table {
+                foo: bytes,
+                bar: int,
+            }
+            block "block-a" "<name>" {
+                simple: string
+                replacement: float?
+            }
+        }
+    }
+}

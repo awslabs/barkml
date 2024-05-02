@@ -1,7 +1,9 @@
 use std::fmt::Display;
 use std::io;
+use std::num::ParseIntError;
 use std::path::PathBuf;
 
+use crate::ValueType;
 use peg::str::LineCol;
 use snafu::Snafu;
 
@@ -10,6 +12,19 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub))]
 pub enum Error {
+    #[snafu(display("Expected an id for a value"))]
+    NoID,
+    #[snafu(display("Array does not have expected number of elements ({})", count))]
+    ArrayLen { count: usize },
+    #[snafu(display("Value expected to be an array but was not"))]
+    NotArray,
+    #[snafu(display(
+        "Value type does not match declared type definition {} != {}",
+        left,
+        right
+    ))]
+    TypeCollision { left: ValueType, right: ValueType },
+
     #[snafu(display("Invalid semantic version defined '{}': {}", version, source))]
     SemVer {
         version: String,
@@ -20,8 +35,26 @@ pub enum Error {
         version: String,
         source: semver::Error,
     },
+
+    #[snafu(display("Internal error on resolution due to scopifying a none scopable statement"))]
+    NotScopable,
     #[snafu(display("Error resolving macro, no such symbol found by path {}", path))]
     MacroNotFound { path: String },
+    #[snafu(display("Macro resolution loop detected"))]
+    MacroLoop,
+    #[snafu(display(
+        "Macro contains a non-index where one would be required '{}': {}",
+        segment,
+        source
+    ))]
+    MacroNonIndex {
+        segment: String,
+        source: ParseIntError,
+    },
+    #[snafu(display("Macro cannot resolve super when there is no parent scope"))]
+    MacroNoSuper,
+    #[snafu(display("Macro references a non-existing scope: {}", scope))]
+    MacroScopeNotFound { scope: String },
     #[snafu(display("Error parsing BarkML file: {}", source))]
     Parse {
         #[snafu(source(from(peg::error::ParseError<LineCol>, Box::new)))]

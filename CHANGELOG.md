@@ -1,3 +1,11 @@
+## 0.6.0
+
+Features:
+
+* Reworks value structure to track id, label and even value type in a better way.
+* Adds typing system and type hint to the language
+* Upgrades macro resolution to a full scope system
+
 ## 0.5.2
 
 Fixes:

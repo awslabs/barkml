@@ -1,8 +1,8 @@
 use base64::Engine;
 use snafu::ResultExt;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
-use crate::value::Value;
+use crate::value::{Value, ValueType};
 use crate::{Float, Int};
 
 peg::parser! {
@@ -20,7 +20,7 @@ peg::parser! {
          = ['\u{03}' | '\u{04}' | '\u{019}' |'\u{017}' ]
 
         rule null() -> Value
-            = l:prefix()? ("null" / "Null" / "NULL" / "nil" / "Nil" / "NIL" / "none" / "None" / "NONE") { Value::Null(l) }
+            = l:prefix()? ("null" / "Null" / "NULL" / "nil" / "Nil" / "NIL" / "none" / "None" / "NONE") {? Value::new_null(l, None).or(Err("value definition")) }
 
         rule positive() -> bool
             = ("true" / "True" / "TRUE" / "yes" / "Yes" / "YES" / "On" / "on" / "ON" ) { true }
@@ -29,7 +29,7 @@ peg::parser! {
         rule boolean() -> bool
             = b:(positive() / negative()) { b }
         rule bool_value() -> Value
-            = l:prefix()? b:boolean() { Value::Bool(b, l) }
+            = l:prefix()? b:boolean() {? Value::new_bool(b, l, None).or(Err("value definition")) }
 
         // Integer Types
         rule int() -> Int
@@ -51,16 +51,17 @@ peg::parser! {
         rule u64() -> Int
             = n:$(['0'..='9']+) "u64" { Int::U64(n.parse().or(Err("u64")).unwrap()) }
 
+        rule floating() -> f64
+            = n:$("-"? ['0'..='9']+ "." ['0'..='9']* (['e' | 'E'] ['+' | '-']? ['0'..='9']+)?)  {? n.parse().or(Err("floating point")) }
         rule float() -> Float
-            = n:$("-"? ['0'..='9']+ "." ['0'..='9']* (['e' | 'E'] ['+' | '-']? ['0'..='9']+)?) { Float::F64(n.parse().or(Err("f64")).unwrap()) }
+            = n:floating() { Float::F64(n) }
         rule f32() -> Float
-            = n:$("-"? ['0'..='9']+ "." ['0'..='9']* (['e' | 'E'] ['+' | '-']? ['0'..='9']+)?) "f32" { Float::F32(n.parse().or(Err("f32")).unwrap()) }
+            = n:floating() "f32" { Float::F32(n as f32) }
         rule f64() -> Float
-            = n:$("-"? ['0'..='9']+ "." ['0'..='9']* (['e' | 'E'] ['+' | '-']? ['0'..='9']+)?) "f64" { Float::F64(n.parse().or(Err("f64")).unwrap()) }
+            = n:floating() "f64" { Float::F64(n) }
 
         rule int_value() -> Value
             = l:prefix()? n:(
-            int() /
             i8() /
             i16() /
             i32() /
@@ -68,10 +69,12 @@ peg::parser! {
             u8() /
             u16() /
             u32() /
-            u64()
-        ) { Value::Int(n, l) }
+            u64() /
+            int()
+        ) {? Value::new_precise_int(n, l, None).or(Err("value definition")) }
         rule float_value() -> Value
-            = l:prefix()? n:(float() / f32() / f64() ) { Value::Float(n, l) }
+            = l:prefix()? n:(f32() / f64() / float() )  {?
+            Value::new_precise_float(n, l, None).or(Err("value definition")) }
 
         rule macro_string() -> String
             = "m'" s:$(['\0'..='\u{0026}' | '\u{0028}'..='\u{10ffff}']+) "'" {
@@ -82,9 +85,9 @@ peg::parser! {
             s.to_string()
         }
         rule macro_literal() -> Value
-            = l:prefix()? s:macro_label()  { Value::Macro(s, l, false) }
+            = l:prefix()? s:macro_label() {? Value::new_macro(s, false, l, None).or(Err("value definition")) }
         rule macro_value() -> Value
-            = l:prefix()? s:macro_string() { Value::Macro(s, l, true) }
+            = l:prefix()? s:macro_string() {? Value::new_macro(s, true, l, None).or(Err("value definition")) }
 
         rule byte_string() -> Vec<u8>
             = "b'" s:$(['\0'..='\u{0026}' | '\u{0028}'..='\u{10ffff}']+) "'" {?
@@ -92,7 +95,7 @@ peg::parser! {
             base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded).or(Err("not base64 encoded"))
         }
         rule byte_value() -> Value
-            = l:prefix()? b:byte_string() { Value::Bytes(b, l) }
+            = l:prefix()? b:byte_string() {? Value::new_bytes(b, l, None).or(Err("value definition")) }
 
         rule line_string() -> String
             = "'" s:$(['\0'..='\u{0026}' | '\u{0028}'..='\u{10ffff}']*) "'" { s.to_string() }
@@ -107,21 +110,21 @@ peg::parser! {
         rule prefix() -> String
             = s:label() sp() { s }
         rule label_value() -> Value
-            = s:label() { Value::Label(s) }
+            = s:label() {? Value::new_label(s, None).or(Err("Value declaration")) }
 
         rule string_value() -> Value
-            = l:prefix()? s:(line_string() / double_string()) { Value::String(s, l) }
+            = l:prefix()? s:(line_string() / double_string()) {? Value::new_string(s, l, None).or(Err("value definition")) }
 
         rule array() -> Value
-            = l:prefix()? "[" ws()? a:(value() ** (ws()? "," ws()?)) ws()? "]" { Value::Array(a, l) }
+            = l:prefix()? "[" ws()? a:(value() ** (ws()? "," ws()?)) ws()? "]" {? Value::new_array(a, l, None).or(Err("value definition")) }
 
         rule keypair() -> (String, Value)
             = k:(line_string() / double_string() / ident_string()) ws()? "=" ws()? v:(value()) {
             (k, v)
         }
         rule table() -> Value
-            = l:prefix()? "{" ws()? pairs:(keypair() ** (ws()? "," ws()?)) ws()? "}" {
-            Value::Table(pairs.into_iter().collect(), l)
+            = l:prefix()? "{" ws()? pairs:(keypair() ** (ws()? "," ws()?)) ws()? "}" {?
+            Value::new_table(pairs.into_iter().collect(), l, None).or(Err("value definition"))
         }
 
         rule number() -> u64
@@ -147,7 +150,7 @@ peg::parser! {
             semver::BuildMetadata::new(p).or(Err("bad build id"))
         }
         rule version() -> Value
-            = l:prefix()? v:base_version() pre:prerelease()? build:build()? {
+            = l:prefix()? v:base_version() pre:prerelease()? build:build()? {?
             let mut version = v.clone();
             if let Some(pre) = pre {
                 version.pre = pre.clone();
@@ -155,7 +158,7 @@ peg::parser! {
             if let Some(build) = build {
                 version.build = build.clone();
             }
-            Value::Version(version, l)
+            Value::new_version(version, l, None).or(Err("value definition"))
         }
 
         rule operator() -> semver::Op
@@ -196,8 +199,8 @@ peg::parser! {
             comparator
         }
         rule require() -> Value
-            = l:prefix()? c:(comparator() ++ ",") {
-            Value::Require(semver::VersionReq { comparators: c }, l)
+            = l:prefix()? c:(comparator() ++ ",") {?
+            Value::new_require(semver::VersionReq { comparators: c }, l, None).or(Err("value definition"))
         }
 
         pub(crate) rule value() -> Value
@@ -218,86 +221,129 @@ peg::parser! {
             v
         }
 
+        // Type definitions!
+        rule string_type() -> ValueType = "string" { ValueType::String }
+        rule int_type() -> ValueType = "int" { ValueType::I64 }
+        rule i8_type() -> ValueType = "i8" { ValueType::I8 }
+        rule i16_type() -> ValueType = "i16" { ValueType::I16 }
+        rule i32_type() -> ValueType = "i32" { ValueType::I32 }
+        rule i64_type() -> ValueType = "i64" { ValueType::I64 }
+        rule u8_type() -> ValueType = "u8" { ValueType::U8 }
+        rule u16_type() -> ValueType = "u16" { ValueType::U16 }
+        rule u32_type() -> ValueType = "u32" { ValueType::U32 }
+        rule u64_type() -> ValueType = "u64" { ValueType::U64 }
+        rule float_type() -> ValueType = "float" { ValueType::F64 }
+        rule f32_type() -> ValueType = "f32" { ValueType::F32 }
+        rule f64_type() -> ValueType = "f64" { ValueType::F64 }
+        rule bytes_type() -> ValueType = "bytes" { ValueType::Bytes }
+        rule bool_type() -> ValueType = "bool" { ValueType::Bool }
+        rule version_type() -> ValueType = "version" { ValueType::Version }
+        rule require_type() -> ValueType = "require" { ValueType::Require }
+        rule label_type() -> ValueType = "label" { ValueType::Label }
 
-        rule comment() -> Value
-            = "#" sp() s:$(text_no_nl()*) { Value::Comment(s.to_string()) }
+        rule simple_type() -> ValueType = t:(
+            string_type() /
+            int_type() /
+            i8_type() /
+            i16_type() /
+            i32_type() /
+            i64_type() /
+            u8_type() /
+            u16_type() /
+            u32_type() /
+            u64_type() /
+            float_type() /
+            f32_type() /
+            f64_type() /
+            bytes_type() /
+            bool_type() /
+            version_type() /
+            require_type() /
+            label_type()
+        ) { t }
 
-        rule control() -> Value
-            = "$" l:ident_string() ws()? "=" ws()? v:value() {
-            Value::Control {
-                label: l,
-                value: Box::new(v),
-            }
+        rule array_type() -> ValueType =
+            "array" ws()? "[" ws()? st:(type_name() ** ",") ws()? "]" {
+            ValueType::Array(st)
+        }
+        rule subtype_def() -> (String, ValueType) =
+            key:ident_string() ws()? value:type_def()  {
+            (key, value)
+        }
+        rule table_type() -> ValueType =
+            "table" ws()? "{" ws()? st:(subtype_def() ** ("," ws()?)) "}" ws()? {
+            ValueType::Table(st.iter().cloned().collect())
+        }
+        rule section_type() -> ValueType =
+            "section" ws()? "{" ws()? st:(subtype_def() ** ("," ws()?)) "}" ws()? {
+            ValueType::Section(st.iter().cloned().collect())
+        }
+        rule block_type() -> ValueType =
+            "block" ws()? "{" ws()? st:(subtype_def() ** ("," ws()?)) "}" ws()? {
+            ValueType::Block(st.iter().cloned().collect())
+        }
+        rule module_type() -> ValueType =
+            "module" ws()? "{" ws()? st:(subtype_def() ** ("," ws()?)) "}" ws()? {
+            ValueType::Module(st.iter().cloned().collect())
         }
 
-        rule assignment() -> Value
-            = l:(double_string() / line_string() / ident_string()) ws()? "=" ws()? v:value() {
-            Value::Assignment {
-                label: l,
-                value: Box::new(v),
-            }
+        rule type_name() -> ValueType
+            = t:(simple_type() / array_type() / table_type() / section_type() / block_type() / module_type()) { t }
+        rule type_def() -> ValueType
+            = ":" ws()? t:type_name() {
+            t
         }
 
-        rule block() -> Value
-            = id:(ident_string()) ws()? labels:((double_string() / line_string()) ** ws()) ws()? "{" ws()? s:(statement_no_section() ** ws()) ws()? "}" {
-            Value::Block {
-                id,
-                labels,
-                statements: s,
-            }
+        rule line_comment() -> String
+            = "#" sp() s:$(text_no_nl()*) nl() { s.trim().to_string() }
+        rule comment() -> String
+            = s:line_comment() { s }
+
+        rule control() -> (String, Value)
+            = "$" l:ident_string() ws()? t:type_def()? ws()? "=" ws()? v:value() {?
+            Ok((l.clone(), Value::new_control(l.clone(), v, None, t).or(Err("statement declaration"))?))
         }
 
-        rule section() -> Value
-            = "[" id:(ident_string() / double_string() / line_string()) "]" nl() s:(statement_no_section() ** ws()) {
-            Value::Section {
-                id,
-                statements: s,
-            }
+        rule assignment() -> (String, Value)
+            = l:(double_string() / line_string() / ident_string()) ws()? t:type_def()? ws()? "=" ws()? v:value() {?
+            Ok((l.clone(), Value::new_assignment(l.clone(), v, None, t).or(Err("statement declaration"))?))
         }
 
-        rule statement_no_section() -> Value
-            = c:(comment() / control() / assignment() / block() / value() ) { c }
+        rule block() -> (String, Value)
+            = id:(ident_string()) ws()? labels:((double_string() / line_string()) ** ws()) ws()? "{" ws()? s:(statement_no_section() ** ws()) ws()? "}" {?
+            Ok((id.clone(), Value::new_block(id.clone(), labels, s.iter().cloned().collect(), None).or(Err("statement declaration"))?))
+        }
 
-        pub(crate) rule statement() -> Value
-            = c:(comment() / section() / control() / assignment() / block() / value() ) { c }
+        rule section() -> (String, Value)
+            = "[" id:(ident_string() / double_string() / line_string()) "]" nl() s:(statement_no_section() ** ws()) {?
+            Ok((id.clone(), Value::new_section(id, s.iter().cloned().collect(), None).or(Err("statement declaration"))?))
+        }
 
-        pub rule idl() -> Vec<Value> = ws()? s:(statement() ** ws()) ws()? {?
-            Ok(join_statements(s))
+        rule statement_no_section() -> (String, Value)
+            = com:comment()? ws()? c:(control() / assignment() / block() ) {
+            let mut value = c.clone();
+            value.1.comment = com;
+            value
+        }
+
+        pub(crate) rule statement() -> (String, Value)
+            = com:comment()? ws()? c:(section() / control() / assignment() / block() ) {
+            let mut value = c.clone();
+            value.1.comment = com;
+            value
+        }
+
+        pub rule idl() -> HashMap<String, Value> = ws()? s:(statement() ** ws()) ws()? {
+            s.iter().cloned().collect()
         }
     }
 }
 
 pub(crate) fn parse(input: &str) -> crate::error::Result<Value> {
-    Ok(Value::Module(
+    Ok(Value::new_module(
         parser::idl(input).context(crate::error::ParseSnafu)?,
-    ))
-}
-
-fn join_statements(input: Vec<Value>) -> Vec<Value> {
-    let mut output = Vec::new();
-    let mut last_comment: Option<Value> = None;
-    for stmt in input.iter() {
-        match stmt {
-            Value::Comment(s) => {
-                if let Some(Value::Comment(l)) = last_comment {
-                    last_comment = Some(Value::Comment([l.clone(), s.clone()].join("\n")));
-                } else {
-                    last_comment = Some(stmt.clone());
-                }
-            }
-            _ => {
-                if let Some(c) = last_comment {
-                    output.push(c.clone());
-                    last_comment = None;
-                }
-                output.push(stmt.clone());
-            }
-        }
-    }
-    if let Some(c) = last_comment {
-        output.push(c);
-    }
-    output
+        None,
+    )?)
 }
 
 #[cfg(test)]
@@ -305,70 +351,65 @@ mod test {
     use std::collections::HashMap;
 
     use assert_matches::assert_matches;
+    use semver::Version;
 
-    use crate::{Float, Int};
+    use crate::{Float, Int, Value, ValueType};
 
     use super::parser::idl;
 
     #[test]
     fn test_idl_parsing() {
-        let _expected = vec![
-            crate::Value::Control {
-                label: "version".to_string(),
-                value: Box::new(crate::Value::String("1.0".to_string(), None)),
-            },
-            crate::Value::Section {
-                id: "section".to_string(),
-                statements: vec![
-                    crate::Value::Comment("Documentation".to_string()),
-                    crate::Value::Control {
-                        label: "foo".to_string(),
-                        value: Box::new(crate::Value::Int(Int::I64(3), None)),
-                    },
-                    crate::Value::Comment("Documentation".to_string()),
-                    crate::Value::Assignment {
-                        label: "foo".to_string(),
-                        value: Box::new(crate::Value::Int(Int::I64(3), None)),
-                    },
-                    crate::Value::Comment("Documentation".to_string()),
-                ],
-            },
-            crate::Value::Section {
-                id: "section2".to_string(),
-                statements: vec![crate::Value::Block {
-                    id: "foo".to_string(),
-                    labels: vec!["bar".to_string(), "baz".to_string()],
-                    statements: vec![
-                        crate::Value::Comment("Documentation".to_string()),
-                        crate::Value::Block {
-                            id: "nested".to_string(),
-                            labels: vec!["bar".to_string()],
-                            statements: vec![crate::Value::Assignment {
-                                label: "bizness".to_string(),
-                                value: Box::new(crate::Value::Float(Float::F64(3.14), None)),
-                            }],
-                        },
-                    ],
-                }],
-            },
-        ];
+        let _expected = HashMap::from([
+            (
+                "version".to_string(),
+                Value::new_control(
+                    "version".into(),
+                    Value::new_string("1.0".into(), None, None).unwrap(),
+                    None,
+                    None,
+                )
+                .unwrap(),
+            ),
+            (
+                "section".to_string(),
+                Value::new_section(
+                    "section".into(),
+                    HashMap::from([
+                        (
+                            "foo".to_string(),
+                            Value::new_control(
+                                "foo".into(),
+                                Value::new_int(3, None, None).unwrap(),
+                                Some("Documentation".to_string()),
+                                Some(ValueType::I64),
+                            )
+                            .unwrap(),
+                        ),
+                        (
+                            "bar".to_string(),
+                            Value::new_assignment(
+                                "bar".into(),
+                                Value::new_precise_int(Int::I16(3), None, None).unwrap(),
+                                Some("Documentation".to_string()),
+                                None,
+                            )
+                            .unwrap(),
+                        ),
+                    ]),
+                    None,
+                )
+                .unwrap(),
+            ),
+        ]);
         assert_matches!(
             super::parser::idl(
                 r#"
         $version = "1.0"
         [section]
         # Documentation
-        $foo = 3
+        $foo: int = 3
         # Documentation
-        foo = 3
-        # Documentation
-        [section2]
-        foo 'bar' "baz" {
-            # Documentation
-            nested 'bar' {
-                'bizness' = 3.14
-            }
-        }
+        bar = 3i16
         "#
             )
             .unwrap(),
@@ -389,38 +430,45 @@ http "test" "this" {
 
     #[test]
     fn test_statement_parsing() {
-        let _expected = crate::Value::Control {
-            label: "foo".to_string(),
-            value: Box::new(crate::Value::Int(Int::I64(3), None)),
-        };
+        let _expected = Value::new_control(
+            "foo".into(),
+            Value::new_int(3, None, None).unwrap(),
+            None,
+            None,
+        )
+        .unwrap();
         assert_matches!(super::parser::statement("$foo = 3").unwrap(), _expected);
-        let _expected = crate::Value::Comment("Documentation".to_string());
+        let _expected = Value::new_assignment(
+            "foo".into(),
+            Value::new_precise_float(Float::F32(3.14), None, Some("PI".to_string())).unwrap(),
+            Some("Documented".to_string()),
+            Some(ValueType::F32),
+        )
+        .unwrap();
         assert_matches!(
-            super::parser::statement("# Documentation").unwrap(),
+            super::parser::statement("# Documented\n'foo' : f32 = 3.14f32").unwrap(),
             _expected
         );
-        let _expected = crate::Value::Assignment {
-            label: "foo".to_string(),
-            value: Box::new(crate::Value::Int(Int::I64(3), None)),
-        };
-        assert_matches!(super::parser::statement("foo = 3").unwrap(), _expected);
-        assert_matches!(super::parser::statement("'foo' = 3").unwrap(), _expected);
-        assert_matches!(super::parser::statement("\"foo\" = 3").unwrap(), _expected);
-        let _expected = crate::Value::Block {
-            id: "foo".to_string(),
-            labels: vec!["bar".to_string(), "baz".to_string()],
-            statements: vec![crate::Value::Comment("Documentation".to_string())],
-        };
+        let _expected = Value::new_block(
+            "foo".into(),
+            vec!["bar".to_string(), "baz".to_string()],
+            HashMap::new(),
+            None,
+        )
+        .unwrap();
+
         assert_matches!(
-            super::parser::statement("foo 'bar' \"baz\" {\n # Documentation\n }").unwrap(),
+            super::parser::statement("foo 'bar' \"baz\" {\n}").unwrap(),
             _expected
         );
-        let _expected = crate::Value::Section {
-            id: "foo".to_string(),
-            statements: vec![crate::Value::Comment("Documentation".to_string())],
-        };
+        let _expected = Value::new_section(
+            "foo".into(),
+            HashMap::new(),
+            Some("Documentation".to_string()),
+        )
+        .unwrap();
         assert_matches!(
-            super::parser::statement("[foo]\n# Documentation").unwrap(),
+            super::parser::statement("# Documentation\n[foo]\n").unwrap(),
             _expected
         );
     }
@@ -471,128 +519,7 @@ http "test" "this" {
 
     #[test]
     fn test_full_file() {
-        let _expected = vec![
-            crate::Value::Control {
-                label: "schema".to_string(),
-                value: Box::new(crate::Value::String(
-                    "1.0.0".to_string(),
-                    Some("Test".to_string()),
-                )),
-            },
-            crate::Value::Section {
-                id: "section-a".to_string(),
-                statements: vec![
-                    crate::Value::Comment("Documentation".to_string()),
-                    crate::Value::Assignment {
-                        label: "number".to_string(),
-                        value: Box::new(crate::Value::Int(Int::I64(4), None)),
-                    },
-                    crate::Value::Assignment {
-                        label: "float".to_string(),
-                        value: Box::new(crate::Value::Float(Float::F64(3.14), None)),
-                    },
-                    crate::Value::Assignment {
-                        label: "string".to_string(),
-                        value: Box::new(crate::Value::String("foobar".to_string(), None)),
-                    },
-                    crate::Value::Assignment {
-                        label: "array".to_string(),
-                        value: Box::new(crate::Value::Array(
-                            vec![
-                                crate::Value::String("hello".to_string(), None),
-                                crate::Value::Int(Int::I64(5), None),
-                                crate::Value::Float(Float::F64(3.14), None),
-                                crate::Value::String("single".to_string(), None),
-                            ],
-                            None,
-                        )),
-                    },
-                    crate::Value::Assignment {
-                        label: "object".to_string(),
-                        value: Box::new(crate::Value::Table(
-                            HashMap::from([
-                                (
-                                    "foo".to_string(),
-                                    crate::Value::Bytes(b"binarystring".to_vec(), None),
-                                ),
-                                ("bar".to_string(), crate::Value::Int(Int::I64(4), None)),
-                            ]),
-                            None,
-                        )),
-                    },
-                    crate::Value::Block {
-                        id: "block".to_string(),
-                        labels: vec!["block-a".to_string(), "label-a".to_string()],
-                        statements: vec![crate::Value::Assignment {
-                            label: "simple".to_string(),
-                            value: Box::new(crate::Value::String("me".to_string(), None)),
-                        }],
-                    },
-                ],
-            },
-            crate::Value::Section {
-                id: "section-b".to_string(),
-                statements: vec![
-                    crate::Value::Comment("Documentation".to_string()),
-                    crate::Value::Assignment {
-                        label: "number".to_string(),
-                        value: Box::new(crate::Value::Int(Int::I64(4), None)),
-                    },
-                    crate::Value::Assignment {
-                        label: "float".to_string(),
-                        value: Box::new(crate::Value::Float(Float::F64(3.14), None)),
-                    },
-                    crate::Value::Assignment {
-                        label: "string".to_string(),
-                        value: Box::new(crate::Value::String("foobar".to_string(), None)),
-                    },
-                    crate::Value::Assignment {
-                        label: "array".to_string(),
-                        value: Box::new(crate::Value::Array(
-                            vec![
-                                crate::Value::String("hello".to_string(), None),
-                                crate::Value::Int(Int::I64(5), None),
-                                crate::Value::Float(Float::F64(3.14), None),
-                                crate::Value::String("single".to_string(), None),
-                            ],
-                            None,
-                        )),
-                    },
-                    crate::Value::Assignment {
-                        label: "object".to_string(),
-                        value: Box::new(crate::Value::Table(
-                            HashMap::from([
-                                (
-                                    "foo".to_string(),
-                                    crate::Value::Bytes(b"binarystring".to_vec(), None),
-                                ),
-                                ("bar".to_string(), crate::Value::Int(Int::I64(4), None)),
-                            ]),
-                            None,
-                        )),
-                    },
-                    crate::Value::Block {
-                        id: "block".to_string(),
-                        labels: vec!["block-a".to_string(), "label-a".to_string()],
-                        statements: vec![
-                            crate::Value::Assignment {
-                                label: "simple".to_string(),
-                                value: Box::new(crate::Value::String(
-                                    "foobar bar".to_string(),
-                                    None,
-                                )),
-                            },
-                            crate::Value::Assignment {
-                                label: "replacement".to_string(),
-                                value: Box::new(crate::Value::Float(Float::F64(3.14), None)),
-                            },
-                        ],
-                    },
-                ],
-            },
-        ];
         let config_str = std::fs::read_to_string("examples/example.bml").unwrap();
-        let config = super::parser::idl(config_str.as_str()).unwrap();
-        assert_matches!(config, _expected);
+        let _ = super::parser::idl(config_str.as_str()).unwrap();
     }
 }

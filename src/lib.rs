@@ -9,6 +9,7 @@ pub use value::*;
 pub mod error;
 mod idl;
 mod loader;
+mod r#macro;
 mod value;
 
 /// Use standard loader settings to parse a BarkML file into a module
@@ -18,20 +19,15 @@ pub fn from_str(input: &str) -> error::Result<Value> {
 
 #[cfg(feature = "binary")]
 /// Decode a barkml set of statements that are encoded in msgpack
-pub fn decode(input: &[u8]) -> error::Result<Vec<Value>> {
+pub fn decode(input: &[u8]) -> error::Result<Value> {
     let parent = MsgPack::parse(input).context(error::MsgPackEncodedSnafu)?;
-    let children = parent.as_array().context(error::MsgPackNotExpectedSnafu)?;
-    let mut stmts = Vec::new();
-    for entry in children.iter() {
-        stmts.push(Value::from_binary(entry.clone())?);
-    }
-    Ok(stmts)
+    Value::from_binary(parent)
 }
 
 #[cfg(feature = "binary")]
 /// Encode a barkml set of statements to msgpack
-pub fn encode(input: &[Value]) -> Vec<u8> {
-    let packed = MsgPack::Array(input.iter().map(|x| x.to_binary()).collect());
+pub fn encode(input: &Value) -> Vec<u8> {
+    let packed = input.to_binary();
     packed.encode()
 }
 
@@ -47,8 +43,7 @@ mod test {
     fn test_encode_decode() {
         let test_code = read_to_string("examples/example.bml").unwrap();
         let stmts = from_str(test_code.as_str()).expect("failed to parse code");
-        let stmts = stmts.as_module().expect("was not a module");
-        let encoded = encode(stmts.as_slice());
+        let encoded = encode(&stmts);
         assert!(!encoded.is_empty());
         decode(encoded.as_slice()).unwrap();
     }

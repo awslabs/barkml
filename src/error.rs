@@ -3,9 +3,10 @@ use std::io;
 use std::num::ParseIntError;
 use std::path::PathBuf;
 
-use crate::ValueType;
 use peg::str::LineCol;
 use snafu::Snafu;
+
+use crate::ValueType;
 
 pub type Result<T> = std::result::Result<T, Error>;
 

@@ -1,5 +1,4 @@
-use std::cmp::max;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{read_dir, File};
 use std::io::{Read, Seek};
 use std::path::Path;
@@ -19,18 +18,18 @@ pub trait Loader {
     fn allow_collisions(&mut self) -> Result<&mut Self>;
     fn read(&self) -> Result<Value>;
 
-    fn macro_resolution(&self, module: &mut Value) -> Result<()> {
+    fn macro_resolution(&self, module: &Value) -> Result<Value> {
         if self.is_resolution_enabled() {
-            let scope = Scope::new(module, None)?;
-            *module = scope.apply()?;
+            let mut scope = Scope::new(module)?;
+            scope.apply()
+        } else {
+            Ok(module.clone())
         }
-        Ok(())
     }
 
     fn load(&self) -> Result<Value> {
         let mut module = self.read()?;
-        self.macro_resolution(&mut module)?;
-        Ok(module)
+        self.macro_resolution(&mut module)
     }
 
     fn merge_into(&self, left: &mut Value, right: &Value) -> Result<()> {
@@ -334,7 +333,7 @@ mod test {
     use assert_matches::assert_matches;
 
     use crate::loader::{LoaderMode, StandardLoader};
-    use crate::{Float, Int, Loader, Value};
+    use crate::{Loader, Value};
 
     #[test]
     pub fn load_single() {
@@ -559,6 +558,6 @@ mod test {
             .load()
             .expect("load failed");
         let children = result.as_module().expect("was not a module");
-        assert_matches!(children, expected);
+        assert_matches!(children, _expected);
     }
 }

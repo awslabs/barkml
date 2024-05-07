@@ -1,190 +1,130 @@
-use crate::error::{self, Result};
-use crate::{Data, Value, ValueType};
-use parking_lot::{Mutex, RwLock};
-use snafu::{ensure, OptionExt, ResultExt};
 use std::cmp::max;
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+
+use snafu::ensure;
 use uuid::Uuid;
 
-#[derive(Clone)]
-pub(crate) struct Scope {
-    inner: Arc<RwLock<Inner>>,
-}
+use crate::error::{self, Result};
+use crate::{Data, Value, ValueType};
 
-struct Inner {
-    node: Value,
-    children: HashMap<String, Scope>,
-    parent: Option<Scope>,
+pub(crate) struct Scope {
+    root: Value,
+    symbol_table: HashMap<String, Value>,
+    path_lookup: HashMap<Uuid, String>,
 }
 
 impl Scope {
-    pub(crate) fn new(node: &Value, parent: Option<Self>) -> Result<Self> {
-        let me = Self {
-            inner: Arc::new(RwLock::new(Inner {
-                node: node.clone(),
-                children: HashMap::new(),
-                parent,
-            })),
-        };
-        println!("Scoping {:?}", node.inner());
-
+    fn walk(node: &Value, path: Vec<String>) -> HashMap<String, Value> {
+        let mut symbol_table = HashMap::new();
+        let id = node.id().clone();
         match node.inner() {
-            Data::Module(children) | Data::Section(children) | Data::Block { children, .. } => {
+            Data::Module(ref children)
+            | Data::Section(ref children)
+            | Data::Block { ref children, .. } => {
+                let mut new_path = path.clone();
+                if let Some(id) = id.as_ref() {
+                    new_path.push(id.clone());
+                }
+                symbol_table.insert(new_path.join("."), node.clone());
                 for child in children.values() {
-                    let me_ref = me.clone();
-                    match child.inner() {
-                        Data::Module(_) | Data::Section(_) | Data::Block { .. } => {
-                            let scope = Scope::new(child, Some(me_ref.clone()))?;
-                            let mut lock = me_ref.inner.write();
-                            {
-                                lock.children.insert(child.id().unwrap().clone(), scope);
-                            }
-                        }
-                        Data::Assignment(value) => {
-                            let id = child.id().unwrap();
-                            if value.as_table().is_some() || value.as_array().is_some() {
-                                let scope = Scope::new(child, Some(me_ref.clone()))?;
-                                let mut lock = me_ref.inner.write();
-                                {
-                                    lock.children.insert(id.clone(), scope);
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
+                    let table = Scope::walk(child, new_path.clone());
+                    symbol_table.extend(table);
                 }
-                Ok(())
             }
-            Data::Assignment(value) => match value.inner() {
-                Data::Table(children) => {
+            Data::Assignment(ref value) => match value.inner() {
+                Data::Table(ref children) => {
+                    let mut new_path = path.clone();
+                    new_path.push(id.unwrap());
+                    symbol_table.insert(new_path.join("."), node.clone());
                     for child in children.values() {
-                        let me_ref = me.clone();
-                        match child.inner() {
-                            Data::Module(_) | Data::Section(_) | Data::Block { .. } => {
-                                let scope = Scope::new(child, Some(me_ref.clone()))?;
-                                let mut lock = me_ref.inner.write();
-                                {
-                                    lock.children.insert(child.id().unwrap().clone(), scope);
-                                }
-                            }
-                            Data::Assignment(value) => {
-                                let id = child.id().unwrap();
-                                if value.as_table().is_some() || value.as_array().is_some() {
-                                    let scope = Scope::new(child, Some(me_ref.clone()))?;
-                                    let mut lock = me_ref.inner.write();
-                                    {
-                                        lock.children.insert(id.clone(), scope);
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
+                        let table = Scope::walk(child, new_path.clone());
+                        symbol_table.extend(table);
                     }
-                    Ok(())
                 }
-                Data::Array(children) => {
-                    for child in children {
-                        let me_ref = me.clone();
-                        match child.inner() {
-                            Data::Module(_) | Data::Section(_) | Data::Block { .. } => {
-                                let scope = Scope::new(child, Some(me_ref.clone()))?;
-                                let mut lock = me_ref.inner.write();
-                                {
-                                    lock.children.insert(child.id().unwrap().clone(), scope);
-                                }
-                            }
-                            Data::Assignment(value) => {
-                                let id = child.id().unwrap();
-                                if value.as_table().is_some() || value.as_array().is_some() {
-                                    let scope = Scope::new(value, Some(me_ref.clone()))?;
-                                    let mut lock = me_ref.inner.write();
-                                    {
-                                        lock.children.insert(id.clone(), scope);
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
+                Data::Array(ref children) => {
+                    let mut new_path = path.clone();
+                    new_path.push(node.id().unwrap());
+                    symbol_table.insert(new_path.join("."), node.clone());
+                    for (index, child) in children.iter().enumerate() {
+                        let mut a_path = new_path.clone();
+                        a_path.push(index.to_string());
+                        symbol_table.insert(a_path.join("."), child.clone());
+                        // TODO: Consider how to handle nested table and arrays here
                     }
-                    Ok(())
                 }
-                _ => Err(error::Error::NotScopable {}),
+                _ => {
+                    let mut new_path = path.clone();
+                    new_path.push(id.unwrap());
+                    symbol_table.insert(new_path.join("."), value.clone());
+                }
             },
-            _ => Err(error::Error::NotScopable {}),
-        }?;
-
-        Ok(me.clone())
+            _ => {}
+        }
+        symbol_table
     }
 
-    pub(crate) fn apply(&self) -> Result<Value> {
+    pub(crate) fn new(node: &Value) -> Result<Self> {
+        let symbol_table = Self::walk(node, Vec::new());
+        let mut path_lookup = HashMap::new();
+        for (key, value) in symbol_table.iter() {
+            path_lookup.insert(value.uid, key.clone());
+        }
+        Ok(Self {
+            root: node.clone(),
+            symbol_table,
+            path_lookup,
+        })
+    }
+
+    pub(crate) fn apply(&mut self) -> Result<Value> {
         let mut visit_log = HashSet::new();
-        let read_lock = self.inner.read();
-        let at = { read_lock.node.clone() };
-        self.resolve_phase(&at, &mut visit_log)
+        let root = self.root.clone();
+        self.resolve_phase(&root, &mut visit_log)
     }
 
-    fn find(
-        &self,
-        visit_log: &mut HashSet<Uuid>,
-        mut path: VecDeque<String>,
-    ) -> Result<Option<Value>> {
-        let current = path.pop_front().unwrap();
-        if path.is_empty() {
-            // We have reached our scope for search
-            let read_lock = self.inner.read();
-            match read_lock.node.inner().clone() {
-                Data::Module(mut children)
-                | Data::Section(mut children)
-                | Data::Block { mut children, .. }
-                | Data::Table(mut children) => {
-                    if let Some(child) = children.get(&current) {
-                        Ok(Some(self.resolve_phase(child, visit_log)?))
-                    } else {
-                        Ok(None)
-                    }
-                }
-                Data::Array(mut data) => {
-                    let index = current
-                        .parse::<usize>()
-                        .context(error::MacroNonIndexSnafu {
-                            segment: current.clone(),
-                        })?;
-                    if let Some(child) = data.get(index) {
-                        Ok(Some(self.resolve_phase(child, visit_log)?))
-                    } else {
-                        Ok(None)
-                    }
-                }
-                _ => Ok(None),
+    fn resolve_path(&mut self, current: &Value, input: String) -> Result<String> {
+        let operating_path: Vec<String> = if input.starts_with("self") || input.starts_with("super")
+        {
+            let mut input = input.clone();
+            let current_path = self.path_lookup.get(&current.uid);
+            ensure!(
+                current_path.is_some(),
+                error::MacroScopeNotFoundSnafu { scope: "null" }
+            );
+            if input.starts_with("super") {
+                let mut current_segments: Vec<&str> = current_path.unwrap().split('.').collect();
+                let mut new_segments: Vec<&str> = input.split('.').collect();
+                current_segments.pop();
+                current_segments.append(&mut new_segments);
+                current_segments.iter().map(|x| x.to_string()).collect()
+            } else {
+                input = input.replace("self", current_path.unwrap());
+                input.split('.').map(|x| x.to_string()).collect()
             }
         } else {
-            // We need to continue searching
-            if current == "this" || current == "self" {
-                // We are searching for the current scope
-                return self.find(visit_log, path);
-            } else if current == "super" {
-                // We are searching for the parent scope
-                let read_lock = self.inner.read();
-                if let Some(parent) = read_lock.parent.as_ref() {
-                    return parent.find(visit_log, path);
-                } else {
-                    return Ok(None);
-                }
+            input.split('.').map(|x| x.to_string()).collect()
+        };
+
+        let mut final_path: Vec<String> = Vec::new();
+        for entry in operating_path {
+            if entry == "this" || entry == "self" {
+                continue;
+            } else if entry == "super" {
+                final_path.pop();
+            } else {
+                final_path.push(entry.to_string());
             }
-            self.inner
-                .read()
-                .children
-                .get(&current)
-                .context(error::MacroScopeNotFoundSnafu {
-                    scope: current.clone(),
-                })?
-                .clone()
-                .find(visit_log, path)
         }
+
+        Ok(final_path.join("."))
     }
 
-    fn resolve_macro_string(&self, input: String, visit_log: &mut HashSet<Uuid>) -> Result<String> {
+    fn resolve_macro_string(
+        &mut self,
+        at: &Value,
+        input: String,
+        visit_log: &mut HashSet<Uuid>,
+    ) -> Result<String> {
         let mut start_index = -1;
         let original = input.clone();
         let mut final_string = original.clone();
@@ -199,14 +139,21 @@ impl Scope {
                 let (before, after) = copy.split_at(start_index as usize);
                 let (middle, _) = after.split_at(i - before.len());
                 let key_string = middle[1..].to_string();
-                let key: VecDeque<String> = key_string.split(".").map(|x| x.to_string()).collect();
+                let path = self.resolve_path(at, key_string.clone())?;
 
-                let replacement = match self.find(visit_log, key)? {
-                    Some(value) => Ok(value.inner().to_macro_string()),
-                    None => Err(error::Error::MacroNotFound {
+                let mut found = match self.symbol_table.get_mut(&path) {
+                    Some(value) => Ok(value.clone()),
+                    None => error::MacroNotFoundSnafu {
                         path: key_string.clone(),
-                    }),
+                    }
+                    .fail(),
                 }?;
+                if found.type_of() == ValueType::Macro {
+                    // Found is still a macro attempt to resolve it and refetch
+                    found = self.resolve_phase(&found, visit_log)?;
+                }
+
+                let replacement = found.inner().to_macro_string();
                 let sindex = if offset == 0 {
                     i as i64 - count
                 } else {
@@ -235,69 +182,52 @@ impl Scope {
     }
 
     fn resolve_macro(
-        &self,
+        &mut self,
         visit_log: &mut HashSet<Uuid>,
-        value: Value,
+        value: &Value,
         input: String,
         is_string: bool,
     ) -> Result<Value> {
         // We now need to begin resolution
+        let mut new_value = value.clone();
         if is_string {
-            let replacement_string = self.resolve_macro_string(input.clone(), visit_log)?;
-            Ok(Value {
-                uid: value.uid.clone(),
-                id: value.id(),
-                type_: ValueType::String,
-                data: Box::new(Data::String(replacement_string)),
-                label: value.label.clone(),
-                comment: value.comment.clone(),
-            })
+            let replacement_string = self.resolve_macro_string(value, input.clone(), visit_log)?;
+            new_value.data = Box::new(Data::String(replacement_string));
+            new_value.type_ = ValueType::String;
         } else {
             // We can assume that the key is a proper path so split it apparent
-            let path: VecDeque<String> = input.split('.').map(|x| x.to_string()).collect();
+            let path = self.resolve_path(value, input.clone())?;
             // We need to find the data of the referenced item.
-            let data = self
-                .find(visit_log, path)?
-                .context(error::MacroNotFoundSnafu {
+            match self.symbol_table.get(&path) {
+                Some(data) => {
+                    new_value.data = data.data.clone();
+                    new_value.type_ = data.type_of();
+                    Ok(())
+                }
+                None => error::MacroNotFoundSnafu {
                     path: input.clone(),
-                })?;
-            Ok(Value {
-                uid: value.uid.clone(),
-                id: value.id(),
-                type_: data.type_of(),
-                data: data.data.clone(),
-                label: value.label.clone(),
-                comment: value.comment.clone(),
-            })
+                }
+                .fail(),
+            }?;
         }
+        Ok(new_value.clone())
     }
 
-    fn resolve_phase(&self, at: &Value, visit_log: &mut HashSet<Uuid>) -> Result<Value> {
-        let uid = at.uid.clone();
-        let scope = self.inner.read();
+    fn resolve_phase(&mut self, at: &Value, visit_log: &mut HashSet<Uuid>) -> Result<Value> {
+        let uid = at.uid;
         let result = match at.inner() {
             Data::Macro(key, is_string) => {
                 ensure!(!visit_log.contains(&uid), error::MacroLoopSnafu);
-                self.resolve_macro(visit_log, at.clone(), key.clone(), *is_string)?
+                self.resolve_macro(visit_log, at, key.clone(), *is_string)
             }
             Data::Module(children) => {
-                let scope = if uid == scope.node.uid {
-                    self
-                } else {
-                    scope.children.get(at.id().as_ref().unwrap()).context(
-                        error::MacroScopeNotFoundSnafu {
-                            scope: at.id().unwrap().clone(),
-                        },
-                    )?
-                };
                 let mut new_children = HashMap::new();
-                for (key, value) in children {
-                    new_children.insert(key.clone(), scope.resolve_phase(value, visit_log)?);
+                for (key, value) in children.iter() {
+                    new_children.insert(key.clone(), self.resolve_phase(value, visit_log)?);
                 }
-                Value {
-                    uid: uid.clone(),
-                    id: at.id(),
-                    label: at.label.clone(),
+                Ok(Value {
+                    uid,
+                    id: at.id.clone(),
                     data: Box::new(Data::Module(new_children.clone())),
                     type_: ValueType::Module(
                         new_children
@@ -306,26 +236,17 @@ impl Scope {
                             .collect(),
                     ),
                     comment: at.comment.clone(),
-                }
+                    label: at.label.clone(),
+                })
             }
             Data::Section(children) => {
-                let scope = if uid == scope.node.uid {
-                    self
-                } else {
-                    scope.children.get(at.id().as_ref().unwrap()).context(
-                        error::MacroScopeNotFoundSnafu {
-                            scope: at.id().unwrap().clone(),
-                        },
-                    )?
-                };
                 let mut new_children = HashMap::new();
-                for (key, value) in children {
-                    new_children.insert(key.clone(), scope.resolve_phase(value, visit_log)?);
+                for (key, value) in children.iter() {
+                    new_children.insert(key.clone(), self.resolve_phase(value, visit_log)?);
                 }
-                Value {
-                    uid: uid.clone(),
-                    id: at.id(),
-                    label: at.label.clone(),
+                Ok(Value {
+                    uid,
+                    id: at.id.clone(),
                     data: Box::new(Data::Section(new_children.clone())),
                     type_: ValueType::Section(
                         new_children
@@ -334,26 +255,36 @@ impl Scope {
                             .collect(),
                     ),
                     comment: at.comment.clone(),
+                    label: at.label.clone(),
+                })
+            }
+            Data::Table(children) => {
+                let mut new_children = HashMap::new();
+                for (key, value) in children.iter() {
+                    new_children.insert(key.clone(), self.resolve_phase(value, visit_log)?);
                 }
+                Ok(Value {
+                    uid,
+                    id: at.id.clone(),
+                    data: Box::new(Data::Table(new_children.clone())),
+                    type_: ValueType::Table(
+                        new_children
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.type_of()))
+                            .collect(),
+                    ),
+                    comment: at.comment.clone(),
+                    label: at.label.clone(),
+                })
             }
             Data::Block { labels, children } => {
-                let scope = if uid == scope.node.uid {
-                    self
-                } else {
-                    scope.children.get(at.id().as_ref().unwrap()).context(
-                        error::MacroScopeNotFoundSnafu {
-                            scope: at.id().unwrap().clone(),
-                        },
-                    )?
-                };
                 let mut new_children = HashMap::new();
-                for (key, value) in children {
-                    new_children.insert(key.clone(), scope.resolve_phase(value, visit_log)?);
+                for (key, value) in children.iter() {
+                    new_children.insert(key.clone(), self.resolve_phase(value, visit_log)?);
                 }
-                Value {
-                    uid: uid.clone(),
-                    id: at.id(),
-                    label: at.label.clone(),
+                Ok(Value {
+                    uid,
+                    id: at.id.clone(),
                     data: Box::new(Data::Block {
                         labels: labels.clone(),
                         children: new_children.clone(),
@@ -365,98 +296,28 @@ impl Scope {
                             .collect(),
                     ),
                     comment: at.comment.clone(),
-                }
+                    label: at.label.clone(),
+                })
             }
-            Data::Assignment(value) => {
-                let new_value = if value.as_table().is_some() || value.as_array().is_some() {
-                    let scope = if uid == scope.node.uid {
-                        self
-                    } else {
-                        scope.children.get(at.id().as_ref().unwrap()).context(
-                            error::MacroScopeNotFoundSnafu {
-                                scope: at.id().unwrap().clone(),
-                            },
-                        )?
-                    };
+            Data::Array(children) => {
+                let mut new_contents = Vec::new();
+                for value in children.iter() {
+                    new_contents.push(self.resolve_phase(value, visit_log)?);
+                }
+                Ok(Value {
+                    uid,
+                    id: at.id.clone(),
+                    data: Box::new(Data::Array(new_contents.clone())),
+                    type_: ValueType::Array(new_contents.iter().map(|x| x.type_of()).collect()),
+                    comment: at.comment.clone(),
+                    label: at.label.clone(),
+                })
+            }
+            Data::Assignment(value) | Data::Control(value) => self.resolve_phase(value, visit_log),
+            _ => Ok(at.clone()),
+        }?;
 
-                    scope.resolve_phase(value, visit_log)?
-                } else {
-                    self.resolve_phase(value, visit_log)?
-                };
-                Value {
-                    uid: uid.clone(),
-                    id: at.id(),
-                    label: at.label.clone(),
-                    data: Box::new(Data::Assignment(new_value.clone())),
-                    type_: new_value.type_of(),
-                    comment: at.comment.clone(),
-                }
-            }
-            Data::Control(value) => {
-                let new_value = if value.as_table().is_some() || value.as_array().is_some() {
-                    let scope = if uid == scope.node.uid {
-                        self
-                    } else {
-                        scope.children.get(at.id().as_ref().unwrap()).context(
-                            error::MacroScopeNotFoundSnafu {
-                                scope: at.id().unwrap().clone(),
-                            },
-                        )?
-                    };
-
-                    scope.resolve_phase(value, visit_log)?
-                } else {
-                    self.resolve_phase(value, visit_log)?
-                };
-                Value {
-                    uid: uid.clone(),
-                    id: at.id(),
-                    label: at.label.clone(),
-                    data: Box::new(Data::Control(new_value.clone())),
-                    type_: new_value.type_of(),
-                    comment: at.comment.clone(),
-                }
-            }
-            Data::Table(children) => {
-                let mut new_children = HashMap::new();
-                for (key, value) in children {
-                    new_children.insert(key.clone(), self.resolve_phase(value, visit_log)?);
-                }
-                Value {
-                    uid: uid.clone(),
-                    id: at.id(),
-                    label: at.label.clone(),
-                    data: Box::new(Data::Table(new_children.clone())),
-                    type_: ValueType::Table(
-                        new_children
-                            .iter()
-                            .map(|(k, v)| (k.clone(), v.type_of()))
-                            .collect(),
-                    ),
-                    comment: at.comment.clone(),
-                }
-            }
-            Data::Array(data) => {
-                let mut new_data = Vec::new();
-                for child in data {
-                    new_data.push(self.resolve_phase(child, visit_log)?);
-                }
-                Value {
-                    uid: uid.clone(),
-                    id: at.id(),
-                    label: at.label.clone(),
-                    data: Box::new(Data::Array(new_data.clone())),
-                    type_: ValueType::Array(new_data.iter().map(|v| v.type_of()).collect()),
-                    comment: at.comment.clone(),
-                }
-            }
-            _ => at.clone(),
-        };
-        let mut write_lock = self.inner.write();
-        {
-            write_lock.node = result.clone();
-        }
         visit_log.insert(uid);
-        Ok(result.clone())
+        Ok(result)
     }
 }

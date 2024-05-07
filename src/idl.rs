@@ -1,6 +1,7 @@
+use std::collections::{HashMap, VecDeque};
+
 use base64::Engine;
 use snafu::ResultExt;
-use std::collections::{HashMap, VecDeque};
 
 use crate::value::{Value, ValueType};
 use crate::{Float, Int};
@@ -340,10 +341,7 @@ peg::parser! {
 }
 
 pub(crate) fn parse(input: &str) -> crate::error::Result<Value> {
-    Ok(Value::new_module(
-        parser::idl(input).context(crate::error::ParseSnafu)?,
-        None,
-    )?)
+    Value::new_module(parser::idl(input).context(crate::error::ParseSnafu)?, None)
 }
 
 #[cfg(test)]
@@ -351,7 +349,6 @@ mod test {
     use std::collections::HashMap;
 
     use assert_matches::assert_matches;
-    use semver::Version;
 
     use crate::{Float, Int, Value, ValueType};
 

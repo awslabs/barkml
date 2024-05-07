@@ -1,12 +1,11 @@
 use std::collections::HashMap;
-use std::fmt::{Display, Formatter, Write};
-use std::hash::{Hash, Hasher};
+use std::fmt::{Display, Formatter};
 
 use base64::Engine;
 #[cfg(feature = "binary")]
 use msgpack_simple::{Extension, MapElement, MsgPack};
-use semver::{self, Op, VersionReq};
-use snafu::{ensure, OptionExt, ResultExt};
+use semver::{self, VersionReq};
+use snafu::ensure;
 use uuid::Uuid;
 
 use crate::error::{self, Result};
@@ -758,8 +757,6 @@ impl Value {
         self.id.as_ref()
     }
 
-    /// Returns the type of the current value
-
     as_fn!(as_module, as_module_mut, value: HashMap<String, Value> where Module);
     as_fn!(as_section, as_section_mut, value: HashMap<String, Value> where Section);
     as_fn!(as_block, as_block_mut, {labels: Vec<String>, children: HashMap<String, Value>} where Block);
@@ -820,23 +817,30 @@ impl Value {
     #[cfg(feature = "binary")]
     pub fn from_binary(entry: MsgPack) -> Result<Self> {
         let parent = entry.as_map().context(error::MsgPackNotExpectedSnafu)?;
-
         let id = if let Some(id) = Self::find_entry(parent.as_slice(), "id") {
-            Some(id.as_string().context(error::MsgPackNotExpectedSnafu)?)
+            if let MsgPack::String(id) = id {
+                Some(id.clone())
+            } else {
+                None
+            }
         } else {
             None
         };
         let label = if let Some(label) = Self::find_entry(parent.as_slice(), "label") {
-            Some(label.as_string().context(error::MsgPackNotExpectedSnafu)?)
+            if let MsgPack::String(label) = label {
+                Some(label.clone())
+            } else {
+                None
+            }
         } else {
             None
         };
         let comment = if let Some(comment) = Self::find_entry(parent.as_slice(), "comment") {
-            Some(
-                comment
-                    .as_string()
-                    .context(error::MsgPackNotExpectedSnafu)?,
-            )
+            if let MsgPack::String(comment) = comment {
+                Some(comment.clone())
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -1049,13 +1053,13 @@ impl Value {
     pub fn to_binary(&self) -> MsgPack {
         let (type_id, value) = match self.inner() {
             Data::Module(value) => (
-                1,
+                0,
                 MsgPack::Map(
                     value
-                        .values()
-                        .map(|x| MapElement {
-                            key: MsgPack::String(x.id().unwrap()),
-                            value: x.to_binary(),
+                        .iter()
+                        .map(|(k, v)| MapElement {
+                            key: MsgPack::String(k.clone()),
+                            value: v.to_binary(),
                         })
                         .collect(),
                 ),
@@ -1068,10 +1072,6 @@ impl Value {
             } => (
                 3,
                 MsgPack::Map(vec![
-                    MapElement {
-                        key: MsgPack::String("id".to_string()),
-                        value: MsgPack::String(self.id.clone().unwrap()),
-                    },
                     MapElement {
                         key: MsgPack::String("labels".to_string()),
                         value: MsgPack::Array(
@@ -1094,210 +1094,76 @@ impl Value {
             ),
             Data::Section(statements) => (
                 4,
-                MsgPack::Map(vec![
-                    MapElement {
-                        key: MsgPack::String("id".to_string()),
-                        value: MsgPack::String(self.id.clone().unwrap()),
-                    },
-                    MapElement {
-                        key: MsgPack::String("statements".to_string()),
-                        value: MsgPack::Map(
-                            statements
-                                .iter()
-                                .map(|(k, v)| MapElement {
-                                    key: MsgPack::String(k.clone()),
-                                    value: v.to_binary(),
-                                })
-                                .collect(),
-                        ),
-                    },
-                ]),
+                MsgPack::Map(
+                    statements
+                        .iter()
+                        .map(|(k, v)| MapElement {
+                            key: MsgPack::String(k.clone()),
+                            value: v.to_binary(),
+                        })
+                        .collect(),
+                ),
             ),
             Data::Table(data) => (
                 100,
-                MsgPack::Map(vec![
-                    MapElement {
-                        key: MsgPack::Int(0),
-                        value: self
-                            .label
-                            .as_ref()
-                            .map(|x| MsgPack::String(x.clone()))
-                            .unwrap_or(MsgPack::Nil),
-                    },
-                    MapElement {
-                        key: MsgPack::Int(1),
-                        value: MsgPack::Map(
-                            data.iter()
-                                .map(|(k, v)| MapElement {
-                                    key: MsgPack::String(k.clone()),
-                                    value: v.to_binary(),
-                                })
-                                .collect(),
-                        ),
-                    },
-                ]),
+                MsgPack::Map(
+                    data.iter()
+                        .map(|(k, v)| MapElement {
+                            key: MsgPack::String(k.clone()),
+                            value: v.to_binary(),
+                        })
+                        .collect(),
+                ),
             ),
             Data::Array(data) => (
                 101,
-                MsgPack::Map(vec![
-                    MapElement {
-                        key: MsgPack::Int(0),
-                        value: self
-                            .label
-                            .as_ref()
-                            .map(|x| MsgPack::String(x.clone()))
-                            .unwrap_or(MsgPack::Nil),
-                    },
-                    MapElement {
-                        key: MsgPack::Int(1),
-                        value: MsgPack::Array(data.iter().map(|x| x.to_binary()).collect()),
-                    },
-                ]),
+                MsgPack::Array(data.iter().map(|x| x.to_binary()).collect()),
             ),
-            Data::String(data) => (
-                102,
-                MsgPack::Map(vec![
-                    MapElement {
-                        key: MsgPack::Int(0),
-                        value: self
-                            .label
-                            .as_ref()
-                            .map(|x| MsgPack::String(x.clone()))
-                            .unwrap_or(MsgPack::Nil),
-                    },
-                    MapElement {
-                        key: MsgPack::Int(1),
-                        value: MsgPack::String(data.clone()),
-                    },
-                ]),
-            ),
-            Data::Bytes(data) => (
-                103,
-                MsgPack::Map(vec![
-                    MapElement {
-                        key: MsgPack::Int(0),
-                        value: self
-                            .label
-                            .as_ref()
-                            .map(|x| MsgPack::String(x.clone()))
-                            .unwrap_or(MsgPack::Nil),
-                    },
-                    MapElement {
-                        key: MsgPack::Int(1),
-                        value: MsgPack::Binary(data.clone()),
-                    },
-                ]),
-            ),
-            Data::Int(data) => (
-                104,
-                MsgPack::Map(vec![
-                    MapElement {
-                        key: MsgPack::Int(0),
-                        value: self
-                            .label
-                            .as_ref()
-                            .map(|x| MsgPack::String(x.clone()))
-                            .unwrap_or(MsgPack::Nil),
-                    },
-                    MapElement {
-                        key: MsgPack::Int(1),
-                        value: MsgPack::Int(data.as_int()),
-                    },
-                ]),
-            ),
-            Data::Float(data) => (
-                105,
-                MsgPack::Map(vec![
-                    MapElement {
-                        key: MsgPack::Int(0),
-                        value: self
-                            .label
-                            .as_ref()
-                            .map(|x| MsgPack::String(x.clone()))
-                            .unwrap_or(MsgPack::Nil),
-                    },
-                    MapElement {
-                        key: MsgPack::Int(0),
-                        value: MsgPack::Float(data.as_float()),
-                    },
-                ]),
-            ),
-            Data::Bool(data) => (
-                106,
-                MsgPack::Map(vec![
-                    MapElement {
-                        key: MsgPack::Int(0),
-                        value: self
-                            .label
-                            .as_ref()
-                            .map(|x| MsgPack::String(x.clone()))
-                            .unwrap_or(MsgPack::Nil),
-                    },
-                    MapElement {
-                        key: MsgPack::Int(1),
-                        value: MsgPack::Boolean(*data),
-                    },
-                ]),
-            ),
+            Data::String(data) => (102, MsgPack::String(data.clone())),
+            Data::Bytes(data) => (103, MsgPack::Binary(data.clone())),
+            Data::Int(data) => (104, MsgPack::Int(data.as_int())),
+            Data::Float(data) => (105, MsgPack::Float(data.as_float())),
+            Data::Bool(data) => (106, MsgPack::Boolean(*data)),
             Data::Label(data) => (107, MsgPack::String(data.clone())),
-            Data::Null => (
-                108,
-                MsgPack::Map(vec![
-                    MapElement {
-                        key: MsgPack::Int(0),
-                        value: self
-                            .label
-                            .as_ref()
-                            .map(|x| MsgPack::String(x.clone()))
-                            .unwrap_or(MsgPack::Nil),
-                    },
-                    MapElement {
-                        key: MsgPack::Int(1),
-                        value: MsgPack::Nil,
-                    },
-                ]),
-            ),
-            Data::Version(version) => (
-                109,
-                MsgPack::Map(vec![
-                    MapElement {
-                        key: MsgPack::Int(0),
-                        value: self
-                            .label
-                            .as_ref()
-                            .map(|x| MsgPack::String(x.clone()))
-                            .unwrap_or(MsgPack::Nil),
-                    },
-                    MapElement {
-                        key: MsgPack::Int(1),
-                        value: MsgPack::String(version.to_string()),
-                    },
-                ]),
-            ),
-            Data::Require(version) => (
-                110,
-                MsgPack::Map(vec![
-                    MapElement {
-                        key: MsgPack::Int(0),
-                        value: self
-                            .label
-                            .as_ref()
-                            .map(|x| MsgPack::String(x.clone()))
-                            .unwrap_or(MsgPack::Nil),
-                    },
-                    MapElement {
-                        key: MsgPack::Int(1),
-                        value: MsgPack::String(version.to_string()),
-                    },
-                ]),
-            ),
+            Data::Null => (108, MsgPack::Nil),
+            Data::Version(version) => (109, MsgPack::String(version.to_string())),
+            Data::Require(version) => (110, MsgPack::String(version.to_string())),
             _ => return MsgPack::Nil,
         };
 
-        MsgPack::Extension(Extension {
-            type_id,
-            value: value.encode(),
-        })
+        MsgPack::Map(vec![
+            MapElement {
+                key: MsgPack::String("id".to_string()),
+                value: if let Some(id) = self.id.as_ref() {
+                    MsgPack::String(id.clone())
+                } else {
+                    MsgPack::Nil
+                },
+            },
+            MapElement {
+                key: MsgPack::String("label".to_string()),
+                value: if let Some(label) = self.label.as_ref() {
+                    MsgPack::String(label.clone())
+                } else {
+                    MsgPack::Nil
+                },
+            },
+            MapElement {
+                key: MsgPack::String("comment".to_string()),
+                value: if let Some(comment) = self.comment.as_ref() {
+                    MsgPack::String(comment.clone())
+                } else {
+                    MsgPack::Nil
+                },
+            },
+            MapElement {
+                key: MsgPack::String("data".to_string()),
+                value: MsgPack::Extension(Extension {
+                    type_id,
+                    value: value.encode(),
+                }),
+            },
+        ])
     }
 }
 
@@ -1309,8 +1175,8 @@ impl Display for Value {
                 .map(|x| x.1.to_string())
                 .collect::<Vec<String>>()
                 .join("\n"),
-            Data::Control(value) => format!("${} = {}", self.id().unwrap(), value.to_string()),
-            Data::Assignment(value) => format!("{} = {}", self.id().unwrap(), value.to_string()),
+            Data::Control(value) => format!("${} = {}", self.id().unwrap(), value),
+            Data::Assignment(value) => format!("{} = {}", self.id().unwrap(), value),
             Data::Block {
                 labels,
                 children: statements,
@@ -1321,7 +1187,7 @@ impl Display for Value {
                 }
                 s.push('{');
                 for statement in statements {
-                    s.push_str(&format!("\n\t{}", statement.1.to_string()));
+                    s.push_str(&format!("\n\t{}", statement.1));
                 }
                 s.push_str("\n}");
                 s
@@ -1329,7 +1195,7 @@ impl Display for Value {
             Data::Section(statements) => {
                 let mut s = format!("[{}]", self.id().unwrap());
                 for statement in statements {
-                    s.push_str(&format!("\n{}", statement.1.to_string()));
+                    s.push_str(&format!("\n{}", statement.1));
                 }
                 s
             }
@@ -1340,7 +1206,7 @@ impl Display for Value {
                 }
                 s += "{ ";
                 for (index, (key, value)) in map.iter().enumerate() {
-                    s += format!("{} = {} ", key, value.to_string()).as_str();
+                    s += format!("{} = {} ", key, value).as_str();
                     if index != map.len() - 1 {
                         s += ", ";
                     }

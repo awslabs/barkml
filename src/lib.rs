@@ -33,7 +33,6 @@ pub fn encode(input: &Value) -> Vec<u8> {
 
 #[cfg(test)]
 mod test {
-    use std::fs::read_to_string;
 
     #[cfg(feature = "binary")]
     use crate::{decode, encode, from_str};

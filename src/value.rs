@@ -739,7 +739,13 @@ impl Value {
     pub fn id(&self) -> Option<String> {
         if let Some(id) = self.id.as_ref() {
             Some(match self.data.as_ref() {
-                Data::Block { labels, .. } => format!("{}.{}", id, labels.join(".")),
+                Data::Block { labels, .. } => {
+                    if labels.is_empty() {
+                        id.clone()
+                    } else {
+                        format!("{}.{}", id, labels.join("."))
+                    }
+                }
                 _ => id.clone(),
             })
         } else {

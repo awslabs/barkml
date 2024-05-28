@@ -1,6 +1,6 @@
 [package]
 name = "barkml"
-version = "0.5.2"
+version = "0.6.0"
 description = "Declarative configuration language"
 repository = "https://github.com/awslabs/barkml"
 categories = ["config"]

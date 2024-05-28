@@ -312,7 +312,8 @@ peg::parser! {
 
         rule block() -> (String, Value)
             = id:(ident_string()) ws()? labels:((double_string() / line_string()) ** ws()) ws()? "{" ws()? s:(statement_no_section() ** ws()) ws()? "}" {?
-            Ok((id.clone(), Value::new_block(id.clone(), labels, s.iter().cloned().collect(), None).or(Err("statement declaration"))?))
+            let final_id = format!("{}.{}", id.clone(), labels.join("."));
+            Ok((final_id, Value::new_block(id.clone(), labels, s.iter().cloned().collect(), None).or(Err("statement declaration"))?))
         }
 
         rule section() -> (String, Value)

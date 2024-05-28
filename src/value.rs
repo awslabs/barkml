@@ -5,7 +5,7 @@ use base64::Engine;
 #[cfg(feature = "binary")]
 use msgpack_simple::{Extension, MapElement, MsgPack};
 use semver::{self, VersionReq};
-use snafu::ensure;
+use snafu::{ensure, OptionExt, ResultExt};
 use uuid::Uuid;
 
 use crate::error::{self, Result};
@@ -737,7 +737,14 @@ impl Value {
     }
 
     pub fn id(&self) -> Option<String> {
-        self.id.clone()
+        if let Some(id) = self.id.as_ref() {
+            Some(match self.data.as_ref() {
+                Data::Block { labels, .. } => format!("{}.{}", id, labels.join(".")),
+                _ => id.clone(),
+            })
+        } else {
+            None
+        }
     }
 
     pub fn type_of(&self) -> ValueType {

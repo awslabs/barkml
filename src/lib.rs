@@ -36,6 +36,7 @@ mod test {
 
     #[cfg(feature = "binary")]
     use crate::{decode, encode, from_str};
+    use std::fs::read_to_string;
 
     #[cfg(feature = "binary")]
     #[test]

@@ -56,6 +56,8 @@ pub enum Error {
     MacroNoSuper,
     #[snafu(display("Macro references a non-existing scope: {}", scope))]
     MacroScopeNotFound { scope: String },
+    #[snafu(display("Error parsing BarkML file: \n{reason}"))]
+    NewParse { reason: String },
     #[snafu(display("Error parsing BarkML file: {}", source))]
     Parse {
         #[snafu(source(from(peg::error::ParseError<LineCol>, Box::new)))]

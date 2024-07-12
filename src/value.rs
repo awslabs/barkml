@@ -5,7 +5,7 @@ use base64::Engine;
 #[cfg(feature = "binary")]
 use msgpack_simple::{Extension, MapElement, MsgPack};
 use semver::{self, VersionReq};
-use snafu::{ensure, OptionExt, ResultExt};
+use snafu::ensure;
 use uuid::Uuid;
 
 use crate::error::{self, Result};
@@ -737,17 +737,30 @@ impl Value {
     }
 
     pub fn id(&self) -> Option<String> {
+        self.id.as_ref().map(|id| match self.data.as_ref() {
+            Data::Block { labels, .. } => {
+                if labels.is_empty() {
+                    id.clone()
+                } else {
+                    format!("{}.{}", id, labels.join("."))
+                }
+            }
+            _ => id.clone(),
+        })
+    }
+
+    pub(crate) fn inject_id(&self) -> Option<String> {
         if let Some(id) = self.id.as_ref() {
-            Some(match self.data.as_ref() {
+            match self.data.as_ref() {
                 Data::Block { labels, .. } => {
                     if labels.is_empty() {
-                        id.clone()
+                        Some(id.clone())
                     } else {
-                        format!("{}.{}", id, labels.join("."))
+                        Some(format!("{}.{}", id, labels.join(".")))
                     }
                 }
-                _ => id.clone(),
-            })
+                _ => Some(id.clone()),
+            }
         } else {
             None
         }

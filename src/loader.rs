@@ -6,6 +6,7 @@ use std::path::Path;
 use snafu::{ensure, OptionExt, ResultExt};
 
 use crate::error::{self, Result};
+use crate::lang::from_str;
 use crate::r#macro::Scope;
 use crate::{Data, Value};
 
@@ -199,7 +200,7 @@ impl StandardLoader {
     {
         let mut code = String::default();
         reader.read_to_string(&mut code).context(error::IoSnafu)?;
-        let module = crate::idl::parse(code.as_str())?;
+        let module = from_str(code.as_str())?;
         self.modules.insert(name.to_string(), module);
         Ok(())
     }
@@ -256,7 +257,7 @@ impl StandardLoader {
             !self.modules.contains_key("root"),
             error::LoaderModuleCollisionSnafu { name: "root" }
         );
-        let value = crate::idl::parse(input)?;
+        let value = from_str(input)?;
         self.modules.insert("root".to_string(), value);
         Ok(self)
     }

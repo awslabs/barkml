@@ -1,3 +1,17 @@
+## 0.6.5
+
+Version is bumping from a .0 -> .5 because there are no major changes in the language syntax but the lexer/parser has been moved away from peg.
+
+Changes:
+
+* Implements a new token lexer using Logos
+* New Recursive descent parser
+* Improved multi-file handling as a single file in Multi mode
+* Removes need for statements to be new-line delimited
+* Commas are now optional in arrays and tables
+* All assignment identifiers can be an identifier (no collision with a keyword) or a string
+* Reserves keywords for future use
+
 ## 0.6.0
 
 Features:

@@ -1,9 +1,8 @@
-use std::collections::{BTreeMap, VecDeque};
+use snafu::{ensure, OptionExt};
+use std::collections::BTreeMap;
 use std::fs::{read_dir, File};
 use std::io::{Read, Seek};
 use std::path::Path;
-
-use snafu::{ensure, OptionExt, ResultExt};
 
 use crate::error::{self, Result};
 use crate::lang::from_str;
@@ -29,8 +28,8 @@ pub trait Loader {
     }
 
     fn load(&self) -> Result<Value> {
-        let mut module = self.read()?;
-        self.macro_resolution(&mut module)
+        let module = self.read()?;
+        self.macro_resolution(&module)
     }
 
     fn merge_into(&self, left: &mut Value, right: &Value) -> Result<()> {
@@ -162,7 +161,7 @@ pub enum LoaderMode {
 /// with user control
 pub struct StandardLoader {
     mode: LoaderMode,
-    modules: BTreeMap<String, Value>,
+    modules: BTreeMap<String, String>,
     collisions: bool,
     resolve_macros: bool,
 }
@@ -190,7 +189,9 @@ impl StandardLoader {
     {
         let path = path.as_ref();
         let name = basename(path)?;
-        let mut file = File::open(path).context(error::IoSnafu)?;
+        let mut file = File::open(path).map_err(|e| error::Error::Io {
+            reason: e.to_string(),
+        })?;
         self.add_from_reader(name.as_str(), &mut file)
     }
 
@@ -199,9 +200,12 @@ impl StandardLoader {
         R: Read + Seek,
     {
         let mut code = String::default();
-        reader.read_to_string(&mut code).context(error::IoSnafu)?;
-        let module = from_str(code.as_str())?;
-        self.modules.insert(name.to_string(), module);
+        reader
+            .read_to_string(&mut code)
+            .map_err(|e| error::Error::Io {
+                reason: e.to_string(),
+            })?;
+        self.modules.insert(name.to_string(), code.clone());
         Ok(())
     }
 
@@ -212,7 +216,9 @@ impl StandardLoader {
     {
         let path = path.as_ref();
         ensure!(
-            path.try_exists().context(error::IoSnafu)?,
+            path.try_exists().map_err(|e| error::Error::Io {
+                reason: e.to_string()
+            })?,
             error::LoaderNotFoundSnafu {
                 path: path.to_path_buf()
             }
@@ -232,10 +238,14 @@ impl StandardLoader {
                     self.add_from_file(path)?;
                 } else {
                     // To fix inconsistencies we need to add to sorted list
-                    let dir_reader = read_dir(path).context(error::IoSnafu)?;
+                    let dir_reader = read_dir(path).map_err(|e| error::Error::Io {
+                        reason: e.to_string(),
+                    })?;
                     let mut files = Vec::new();
                     for entry in dir_reader {
-                        let entry = entry.context(error::IoSnafu)?;
+                        let entry = entry.map_err(|e| error::Error::Io {
+                            reason: e.to_string(),
+                        })?;
                         let entry_path = entry.path();
                         if entry_path.is_file() {
                             files.push(entry_path.clone());
@@ -257,8 +267,7 @@ impl StandardLoader {
             !self.modules.contains_key("root"),
             error::LoaderModuleCollisionSnafu { name: "root" }
         );
-        let value = from_str(input)?;
-        self.modules.insert("root".to_string(), value);
+        self.modules.insert("root".to_string(), input.to_string());
         Ok(self)
     }
 }
@@ -295,21 +304,13 @@ impl Loader for StandardLoader {
     /// a single module
     fn read(&self) -> Result<Value> {
         ensure!(!self.modules.is_empty(), error::LoaderNoModulesSnafu);
-
-        match self.mode {
-            LoaderMode::Single => {
-                let module_list: Vec<&Value> = self.modules.values().collect();
-                Ok(module_list[0].clone())
-            }
-            LoaderMode::Merge => {
-                let mut module_list: VecDeque<&Value> = self.modules.values().collect();
-                let mut root = module_list.pop_front().unwrap().clone();
-                for right in module_list.iter() {
-                    self.merge_into(&mut root, right)?;
-                }
-                Ok(root)
-            }
-        }
+        let code = self
+            .modules
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        from_str(code.as_str())
     }
 }
 
@@ -329,7 +330,7 @@ fn basename<P: AsRef<Path>>(path: P) -> Result<String> {
 
 #[cfg(test)]
 mod test {
-    use std::collections::HashMap;
+    use indexmap::IndexMap;
 
     use assert_matches::assert_matches;
 
@@ -339,7 +340,7 @@ mod test {
     #[test]
     pub fn load_single() {
         let _expected = Value::new_module(
-            HashMap::from([
+            IndexMap::from([
                 (
                     "schema".into(),
                     Value::new_control(
@@ -354,7 +355,7 @@ mod test {
                     "section-a".into(),
                     Value::new_section(
                         "section-a".into(),
-                        HashMap::from([
+                        IndexMap::from([
                             (
                                 "number".into(),
                                 Value::new_assignment(
@@ -410,7 +411,7 @@ mod test {
                                 Value::new_assignment(
                                     "object".into(),
                                     Value::new_table(
-                                        HashMap::from([
+                                        IndexMap::from([
                                             (
                                                 "foo".into(),
                                                 Value::new_bytes(
@@ -436,7 +437,7 @@ mod test {
                                 Value::new_block(
                                     "block".into(),
                                     vec!["block-a".to_string(), "label-a".to_string()],
-                                    HashMap::from([(
+                                    IndexMap::from([(
                                         "simple".into(),
                                         Value::new_string("me".into(), None, None).unwrap(),
                                     )]),
@@ -453,7 +454,7 @@ mod test {
                     "section-b".into(),
                     Value::new_section(
                         "section-b".into(),
-                        HashMap::from([
+                        IndexMap::from([
                             (
                                 "number".into(),
                                 Value::new_assignment(
@@ -509,7 +510,7 @@ mod test {
                                 Value::new_assignment(
                                     "object".into(),
                                     Value::new_table(
-                                        HashMap::from([
+                                        IndexMap::from([
                                             (
                                                 "foo".into(),
                                                 Value::new_bytes(
@@ -535,7 +536,7 @@ mod test {
                                 Value::new_block(
                                     "block".into(),
                                     vec!["block-a".to_string(), "label-a".to_string()],
-                                    HashMap::from([(
+                                    IndexMap::from([(
                                         "simple".into(),
                                         Value::new_string("me".into(), None, None).unwrap(),
                                     )]),
@@ -558,6 +559,234 @@ mod test {
             .expect("path detection failed")
             .load()
             .expect("load failed");
+        let children = result.as_module().expect("was not a module");
+        assert_matches!(children, _expected);
+    }
+
+    #[test]
+    pub fn load_multiple() {
+        let _expected = Value::new_module(
+            IndexMap::from([
+                (
+                    "schema".into(),
+                    Value::new_control(
+                        "schema".into(),
+                        Value::new_string("1.0.0".into(), Some("Test".to_string()), None).unwrap(),
+                        None,
+                        None,
+                    )
+                    .unwrap(),
+                ),
+                (
+                    "section-a".into(),
+                    Value::new_section(
+                        "section-a".into(),
+                        IndexMap::from([
+                            (
+                                "number".into(),
+                                Value::new_assignment(
+                                    "number".into(),
+                                    Value::new_int(4, None, None).unwrap(),
+                                    Some("Documentation".to_string()),
+                                    None,
+                                )
+                                .unwrap(),
+                            ),
+                            (
+                                "float".into(),
+                                Value::new_assignment(
+                                    "float".into(),
+                                    Value::new_float(3.14, None, None).unwrap(),
+                                    None,
+                                    None,
+                                )
+                                .unwrap(),
+                            ),
+                            (
+                                "string".into(),
+                                Value::new_assignment(
+                                    "string".into(),
+                                    Value::new_string("foobar".into(), None, None).unwrap(),
+                                    None,
+                                    None,
+                                )
+                                .unwrap(),
+                            ),
+                            (
+                                "array".to_string(),
+                                Value::new_assignment(
+                                    "array".into(),
+                                    Value::new_array(
+                                        vec![
+                                            Value::new_string("hello".into(), None, None).unwrap(),
+                                            Value::new_int(5, None, None).unwrap(),
+                                            Value::new_float(3.14, None, None).unwrap(),
+                                            Value::new_string("single".into(), None, None).unwrap(),
+                                        ],
+                                        None,
+                                        None,
+                                    )
+                                    .unwrap(),
+                                    None,
+                                    None,
+                                )
+                                .unwrap(),
+                            ),
+                            (
+                                "object".into(),
+                                Value::new_assignment(
+                                    "object".into(),
+                                    Value::new_table(
+                                        IndexMap::from([
+                                            (
+                                                "foo".into(),
+                                                Value::new_bytes(
+                                                    b"binarystring".to_vec(),
+                                                    None,
+                                                    None,
+                                                )
+                                                .unwrap(),
+                                            ),
+                                            ("bar".into(), Value::new_int(4, None, None).unwrap()),
+                                        ]),
+                                        None,
+                                        None,
+                                    )
+                                    .unwrap(),
+                                    None,
+                                    None,
+                                )
+                                .unwrap(),
+                            ),
+                            (
+                                "block".into(),
+                                Value::new_block(
+                                    "block".into(),
+                                    vec!["block-a".to_string(), "label-a".to_string()],
+                                    IndexMap::from([(
+                                        "simple".into(),
+                                        Value::new_string("me".into(), None, None).unwrap(),
+                                    )]),
+                                    None,
+                                )
+                                .unwrap(),
+                            ),
+                        ]),
+                        Some("Documentation".to_string()),
+                    )
+                    .unwrap(),
+                ),
+                (
+                    "section-b".into(),
+                    Value::new_section(
+                        "section-b".into(),
+                        IndexMap::from([
+                            (
+                                "number".into(),
+                                Value::new_assignment(
+                                    "number".into(),
+                                    Value::new_int(4, None, None).unwrap(),
+                                    Some("Documentation".to_string()),
+                                    None,
+                                )
+                                .unwrap(),
+                            ),
+                            (
+                                "float".into(),
+                                Value::new_assignment(
+                                    "float".into(),
+                                    Value::new_float(3.14, None, None).unwrap(),
+                                    None,
+                                    None,
+                                )
+                                .unwrap(),
+                            ),
+                            (
+                                "string".into(),
+                                Value::new_assignment(
+                                    "string".into(),
+                                    Value::new_string("foobar".into(), None, None).unwrap(),
+                                    None,
+                                    None,
+                                )
+                                .unwrap(),
+                            ),
+                            (
+                                "array".to_string(),
+                                Value::new_assignment(
+                                    "array".into(),
+                                    Value::new_array(
+                                        vec![
+                                            Value::new_string("hello".into(), None, None).unwrap(),
+                                            Value::new_int(5, None, None).unwrap(),
+                                            Value::new_float(3.14, None, None).unwrap(),
+                                            Value::new_string("single".into(), None, None).unwrap(),
+                                        ],
+                                        None,
+                                        None,
+                                    )
+                                    .unwrap(),
+                                    None,
+                                    None,
+                                )
+                                .unwrap(),
+                            ),
+                            (
+                                "object".into(),
+                                Value::new_assignment(
+                                    "object".into(),
+                                    Value::new_table(
+                                        IndexMap::from([
+                                            (
+                                                "foo".into(),
+                                                Value::new_bytes(
+                                                    b"binarystring".to_vec(),
+                                                    None,
+                                                    None,
+                                                )
+                                                .unwrap(),
+                                            ),
+                                            ("bar".into(), Value::new_int(4, None, None).unwrap()),
+                                        ]),
+                                        None,
+                                        None,
+                                    )
+                                    .unwrap(),
+                                    None,
+                                    None,
+                                )
+                                .unwrap(),
+                            ),
+                            (
+                                "block".into(),
+                                Value::new_block(
+                                    "block".into(),
+                                    vec!["block-a".to_string(), "label-a".to_string()],
+                                    IndexMap::from([(
+                                        "simple".into(),
+                                        Value::new_string("me".into(), None, None).unwrap(),
+                                    )]),
+                                    None,
+                                )
+                                .unwrap(),
+                            ),
+                        ]),
+                        Some("Documentation".to_string()),
+                    )
+                    .unwrap(),
+                ),
+            ]),
+            None,
+        );
+        let result = StandardLoader::default()
+            .mode(LoaderMode::Merge)
+            .expect("failed to set mode")
+            .path("examples/config_append")
+            .expect("path detection failed")
+            .load()
+            .expect("load failed");
+        println!("left:\n {}", result);
+        println!("right:\n {}", _expected.unwrap());
         let children = result.as_module().expect("was not a module");
         assert_matches!(children, _expected);
     }

@@ -1,3 +1,6 @@
+#![allow(clippy::approx_constant)]
+#![allow(clippy::from_str_radix_10)]
+
 #[cfg(feature = "binary")]
 use msgpack_simple::MsgPack;
 #[cfg(feature = "binary")]
@@ -20,7 +23,9 @@ pub fn from_str(input: &str) -> error::Result<Value> {
 #[cfg(feature = "binary")]
 /// Decode a barkml set of statements that are encoded in msgpack
 pub fn decode(input: &[u8]) -> error::Result<Value> {
-    let parent = MsgPack::parse(input).context(error::MsgPackEncodedSnafu)?;
+    let parent = MsgPack::parse(input).map_err(|e| error::Error::MsgPackEncoded {
+        reason: e.to_string(),
+    })?;
     Value::from_binary(parent)
 }
 
@@ -40,7 +45,7 @@ mod test {
     #[cfg(feature = "binary")]
     #[test]
     fn test_encode_decode() {
-        let test_code = read_to_string("examples/example.bml").unwrap();
+        let test_code = std::fs::read_to_string("examples/example.bml").unwrap();
         let stmts = from_str(test_code.as_str()).expect("failed to parse code");
         let encoded = encode(&stmts);
         assert!(!encoded.is_empty());

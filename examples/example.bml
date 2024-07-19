@@ -1,25 +1,14 @@
-$schema = !Test "1.0.0"
-[section-a]
+$tire = !Test 1.0.0
+[section-1]
 # Documentation
 number = 4
-float: f32 = 3.14f32
-version = 1.2.3-beta.6
-require = ^1.3.3
-require2 = =1
-string = "foobar"
-array  = ["hello", 5, 3.14, 'single']
+floating: f32 = 3.14f32
+versioning = 1.2.3-beta.6
+requires3 = ^1.3.3
+requires2 = =1
+strings = "foobar"
+arrays  = ["hello", 5, 3.14, 'single']
 object = { foo = b'YmluYXJ5c3RyaW5n', "bar" = 4 }
-block "block-a" "label-a" {
+blocks "block-a" "label-a" {
     simple = "me"
-}
-["section-b"]
-# Documentation
-number = 4
-float  = 3.14
-string = "foobar"
-array  = ["hello", 5, 3.14, 'single']
-object = { foo = b'YmluYXJ5c3RyaW5n', "bar" = 4 }
-block "block-a" "label-a" {
-    simple = m'{section-a.string} bar'
-    replacement = m!section-a.float
 }

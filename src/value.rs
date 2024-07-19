@@ -1,7 +1,7 @@
-use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 
 use base64::Engine;
+use indexmap::IndexMap;
 #[cfg(feature = "binary")]
 use msgpack_simple::{Extension, MapElement, MsgPack};
 use semver::{self, VersionReq};
@@ -12,7 +12,7 @@ use crate::error::{self, Result};
 
 /// Stores integer values in their appropriate
 /// precisioned type.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Int {
     I8(i8),
     I16(i16),
@@ -101,7 +101,7 @@ impl Display for Int {
 }
 
 /// Stores a precision based floating point value
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Float {
     F32(f32),
     F64(f64),
@@ -150,11 +150,21 @@ pub struct Value {
     pub comment: Option<String>,
 }
 
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        self.data == other.data
+            && self.id == other.id
+            && self.label == other.label
+            && self.comment == other.comment
+            && self.type_ == other.type_
+    }
+}
+
 /// A `Value` will represent a given node in a barkml file
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Data {
     /// Modules represent a single BarkML file
-    Module(HashMap<String, Value>),
+    Module(IndexMap<String, Value>),
     /// Control statements begin with a $ and assign a value
     Control(Value),
     /// Any assignment whose label/identifier does not start with $ is considered a normal
@@ -164,16 +174,16 @@ pub enum Data {
     /// followed by 0 or more string labels
     Block {
         labels: Vec<String>,
-        children: HashMap<String, Value>,
+        children: IndexMap<String, Value>,
     },
     /// A section is defined by an identifier inside square brackets and contains
     /// any number of values defined below this identifier until end of file or another
     /// section is defined
-    Section(HashMap<String, Value>),
+    Section(IndexMap<String, Value>),
 
     /// A table is a set of string keys to values (set via =)
     /// This value type can be prefixed with a !Label
-    Table(HashMap<String, Value>),
+    Table(IndexMap<String, Value>),
 
     /// An array of values defined inside square brackets.
     /// Arrays in BarkML can contain mixed types
@@ -288,10 +298,10 @@ pub enum ValueType {
     Label,
     Null,
     Array(Vec<Self>),
-    Table(HashMap<String, Self>),
-    Section(HashMap<String, Self>),
-    Block(HashMap<String, Self>),
-    Module(HashMap<String, Self>),
+    Table(IndexMap<String, Self>),
+    Section(IndexMap<String, Self>),
+    Block(IndexMap<String, Self>),
+    Module(IndexMap<String, Self>),
 }
 
 impl Display for ValueType {
@@ -455,7 +465,7 @@ macro_rules! new_number {
 }
 
 impl Value {
-    pub fn new_module(statements: HashMap<String, Self>, comment: Option<String>) -> Result<Self> {
+    pub fn new_module(statements: IndexMap<String, Self>, comment: Option<String>) -> Result<Self> {
         Ok(Self {
             uid: Uuid::now_v7(),
             data: Box::new(Data::Module(statements.clone())),
@@ -473,7 +483,7 @@ impl Value {
 
     pub fn new_section(
         id: String,
-        statements: HashMap<String, Self>,
+        statements: IndexMap<String, Self>,
         comment: Option<String>,
     ) -> Result<Self> {
         Ok(Self {
@@ -494,7 +504,7 @@ impl Value {
     pub fn new_block(
         id: String,
         labels: Vec<String>,
-        statements: HashMap<String, Self>,
+        statements: IndexMap<String, Self>,
         comment: Option<String>,
     ) -> Result<Self> {
         Ok(Self {
@@ -550,7 +560,7 @@ impl Value {
     }
 
     pub fn new_table(
-        content: HashMap<String, Self>,
+        content: IndexMap<String, Self>,
         label: Option<String>,
         comment: Option<String>,
     ) -> Result<Self> {
@@ -783,12 +793,12 @@ impl Value {
         self.id.as_ref()
     }
 
-    as_fn!(as_module, as_module_mut, value: HashMap<String, Value> where Module);
-    as_fn!(as_section, as_section_mut, value: HashMap<String, Value> where Section);
-    as_fn!(as_block, as_block_mut, {labels: Vec<String>, children: HashMap<String, Value>} where Block);
+    as_fn!(as_module, as_module_mut, value: IndexMap<String, Value> where Module);
+    as_fn!(as_section, as_section_mut, value: IndexMap<String, Value> where Section);
+    as_fn!(as_block, as_block_mut, {labels: Vec<String>, children: IndexMap<String, Value>} where Block);
     as_fn!(as_assignment, as_assignment_mut, value: Value where Assignment);
     as_fn!(as_control, as_control_mut, value: Value where Control);
-    as_fn!(as_table, as_table_mut, value: HashMap<String, Value> where Table);
+    as_fn!(as_table, as_table_mut, value: IndexMap<String, Value> where Table);
     as_fn!(as_array, as_array_mut, value: Vec<Value> where Array);
     as_fn!(as_macro, as_macro_mut, value: String where Macro);
     as_fn!(as_string, as_string_mut, value: String where String);
@@ -825,6 +835,7 @@ impl Value {
     as_fn!(as_require, as_require_mut, value: VersionReq where Require);
 
     /// Returns true if the value is a null value
+    #[allow(unused)]
     fn is_null(&self) -> bool {
         matches!(self.inner(), Data::Null)
     }
@@ -842,7 +853,11 @@ impl Value {
     /// Read the value from a message pack encoded binary object
     #[cfg(feature = "binary")]
     pub fn from_binary(entry: MsgPack) -> Result<Self> {
-        let parent = entry.as_map().context(error::MsgPackNotExpectedSnafu)?;
+        let parent = entry
+            .as_map()
+            .map_err(|e| error::Error::MsgPackNotExpected {
+                reason: e.to_string(),
+            })?;
         let id = if let Some(id) = Self::find_entry(parent.as_slice(), "id") {
             if let MsgPack::String(id) = id {
                 Some(id.clone())
@@ -871,16 +886,26 @@ impl Value {
             None
         };
         let ext = if let Some(data) = Self::find_entry(parent.as_slice(), "data") {
-            data.as_extension().context(error::MsgPackNotExpectedSnafu)
+            data.as_extension()
+                .map_err(|e| error::Error::MsgPackNotExpected {
+                    reason: e.to_string(),
+                })
         } else {
             Err(error::Error::MsgPackUnsupported)
         }?;
 
-        let value = MsgPack::parse(ext.value.as_slice()).context(error::MsgPackEncodedSnafu)?;
+        let value =
+            MsgPack::parse(ext.value.as_slice()).map_err(|e| error::Error::MsgPackEncoded {
+                reason: e.to_string(),
+            })?;
         let (data, value_type) = match ext.type_id {
             0 => {
-                let entries = value.as_map().context(error::MsgPackNotExpectedSnafu)?;
-                let statements: HashMap<String, Value> = entries
+                let entries = value
+                    .as_map()
+                    .map_err(|e| error::Error::MsgPackNotExpected {
+                        reason: e.to_string(),
+                    })?;
+                let statements: IndexMap<String, Value> = entries
                     .iter()
                     .map(|x| {
                         (
@@ -908,22 +933,32 @@ impl Value {
                 (Data::Assignment(value.clone()), value.type_of())
             }
             3 => {
-                let entries = value.as_map().context(error::MsgPackNotExpectedSnafu)?;
+                let entries = value
+                    .as_map()
+                    .map_err(|e| error::Error::MsgPackNotExpected {
+                        reason: e.to_string(),
+                    })?;
                 let labels: Vec<String> = Self::find_entry(&entries, "labels")
                     .context(error::MsgPackUnsupportedSnafu)?
                     .as_array()
-                    .context(error::MsgPackNotExpectedSnafu)?
+                    .map_err(|e| error::Error::MsgPackNotExpected {
+                        reason: e.to_string(),
+                    })?
                     .iter()
                     .flat_map(|x| {
                         x.clone()
                             .as_string()
-                            .context(error::MsgPackNotExpectedSnafu)
+                            .map_err(|e| error::Error::MsgPackNotExpected {
+                                reason: e.to_string(),
+                            })
                     })
                     .collect();
-                let statements: HashMap<String, Value> = Self::find_entry(&entries, "statements")
+                let statements: IndexMap<String, Value> = Self::find_entry(&entries, "statements")
                     .context(error::MsgPackUnsupportedSnafu)?
                     .as_map()
-                    .context(error::MsgPackNotExpectedSnafu)?
+                    .map_err(|e| error::Error::MsgPackNotExpected {
+                        reason: e.to_string(),
+                    })?
                     .iter()
                     .map(|x| {
                         (
@@ -946,8 +981,12 @@ impl Value {
                 )
             }
             4 => {
-                let entries = value.as_map().context(error::MsgPackNotExpectedSnafu)?;
-                let statements: HashMap<String, Value> = entries
+                let entries = value
+                    .as_map()
+                    .map_err(|e| error::Error::MsgPackNotExpected {
+                        reason: e.to_string(),
+                    })?;
+                let statements: IndexMap<String, Value> = entries
                     .iter()
                     .map(|x| {
                         (
@@ -967,14 +1006,18 @@ impl Value {
                 )
             }
             100 => {
-                let content = value.as_map().context(error::MsgPackNotExpectedSnafu)?;
-                let mut table_content = HashMap::new();
+                let content = value
+                    .as_map()
+                    .map_err(|e| error::Error::MsgPackNotExpected {
+                        reason: e.to_string(),
+                    })?;
+                let mut table_content = IndexMap::new();
                 for entry in content.iter() {
-                    let key = entry
-                        .key
-                        .clone()
-                        .as_string()
-                        .context(error::MsgPackNotExpectedSnafu)?;
+                    let key = entry.key.clone().as_string().map_err(|e| {
+                        error::Error::MsgPackNotExpected {
+                            reason: e.to_string(),
+                        }
+                    })?;
                     let value = Self::from_binary(entry.value.clone())?;
                     table_content.insert(key, value);
                 }
@@ -989,7 +1032,11 @@ impl Value {
                 )
             }
             101 => {
-                let content = value.as_array().context(error::MsgPackNotExpectedSnafu)?;
+                let content = value
+                    .as_array()
+                    .map_err(|e| error::Error::MsgPackNotExpected {
+                        reason: e.to_string(),
+                    })?;
                 let mut array_content = Vec::new();
                 for entry in content.iter() {
                     array_content.push(Self::from_binary(entry.clone())?);
@@ -1000,27 +1047,51 @@ impl Value {
                 )
             }
             102 => {
-                let value = value.as_string().context(error::MsgPackNotExpectedSnafu)?;
+                let value = value
+                    .as_string()
+                    .map_err(|e| error::Error::MsgPackNotExpected {
+                        reason: e.to_string(),
+                    })?;
                 (Data::String(value), ValueType::String)
             }
             103 => {
-                let value = value.as_binary().context(error::MsgPackNotExpectedSnafu)?;
+                let value = value
+                    .as_binary()
+                    .map_err(|e| error::Error::MsgPackNotExpected {
+                        reason: e.to_string(),
+                    })?;
                 (Data::Bytes(value), ValueType::Bytes)
             }
             104 => {
-                let value = value.as_int().context(error::MsgPackNotExpectedSnafu)?;
+                let value = value
+                    .as_int()
+                    .map_err(|e| error::Error::MsgPackNotExpected {
+                        reason: e.to_string(),
+                    })?;
                 (Data::Int(Int::I64(value)), ValueType::I64)
             }
             105 => {
-                let value = value.as_float().context(error::MsgPackNotExpectedSnafu)?;
+                let value = value
+                    .as_float()
+                    .map_err(|e| error::Error::MsgPackNotExpected {
+                        reason: e.to_string(),
+                    })?;
                 (Data::Float(Float::F64(value)), ValueType::F64)
             }
             106 => {
-                let value = value.as_boolean().context(error::MsgPackNotExpectedSnafu)?;
+                let value = value
+                    .as_boolean()
+                    .map_err(|e| error::Error::MsgPackNotExpected {
+                        reason: e.to_string(),
+                    })?;
                 (Data::Bool(value), ValueType::Bool)
             }
             107 => {
-                let label = value.as_string().context(error::MsgPackNotExpectedSnafu)?;
+                let label = value
+                    .as_string()
+                    .map_err(|e| error::Error::MsgPackNotExpected {
+                        reason: e.to_string(),
+                    })?;
                 (Data::Label(label), ValueType::Label)
             }
             108 => {
@@ -1028,19 +1099,30 @@ impl Value {
                 (Data::Null, ValueType::Null)
             }
             109 => {
-                let version = value.as_string().context(error::MsgPackNotExpectedSnafu)?;
+                let version = value
+                    .as_string()
+                    .map_err(|e| error::Error::MsgPackNotExpected {
+                        reason: e.to_string(),
+                    })?;
                 let version =
-                    semver::Version::parse(version.as_str()).context(error::SemVerSnafu {
+                    semver::Version::parse(version.as_str()).map_err(|e| error::Error::SemVer {
                         version: version.clone(),
+                        reason: e.to_string(),
                     })?;
                 (Data::Version(version), ValueType::Version)
             }
             110 => {
-                let version = value.as_string().context(error::MsgPackNotExpectedSnafu)?;
-                let version =
-                    semver::VersionReq::parse(version.as_str()).context(error::SemVerReqSnafu {
-                        version: version.clone(),
+                let version = value
+                    .as_string()
+                    .map_err(|e| error::Error::MsgPackNotExpected {
+                        reason: e.to_string(),
                     })?;
+                let version = semver::VersionReq::parse(version.as_str()).map_err(|e| {
+                    error::Error::SemVerReq {
+                        version: version.clone(),
+                        reason: e.to_string(),
+                    }
+                })?;
                 (Data::Require(version), ValueType::Require)
             }
             _ => {

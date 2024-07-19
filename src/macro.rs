@@ -1,5 +1,5 @@
+use indexmap::{IndexMap, IndexSet};
 use std::cmp::max;
-use std::collections::{HashMap, HashSet};
 
 use snafu::ensure;
 use uuid::Uuid;
@@ -9,13 +9,13 @@ use crate::{Data, Value, ValueType};
 
 pub(crate) struct Scope {
     root: Value,
-    symbol_table: HashMap<String, Value>,
-    path_lookup: HashMap<Uuid, String>,
+    symbol_table: IndexMap<String, Value>,
+    path_lookup: IndexMap<Uuid, String>,
 }
 
 impl Scope {
-    fn walk(node: &Value, path: Vec<String>) -> HashMap<String, Value> {
-        let mut symbol_table = HashMap::new();
+    fn walk(node: &Value, path: Vec<String>) -> IndexMap<String, Value> {
+        let mut symbol_table = IndexMap::new();
         let id = node.id().clone();
         match node.inner() {
             Data::Module(ref children)
@@ -65,7 +65,7 @@ impl Scope {
 
     pub(crate) fn new(node: &Value) -> Result<Self> {
         let symbol_table = Self::walk(node, Vec::new());
-        let mut path_lookup = HashMap::new();
+        let mut path_lookup = IndexMap::new();
         for (key, value) in symbol_table.iter() {
             path_lookup.insert(value.uid, key.clone());
         }
@@ -77,7 +77,7 @@ impl Scope {
     }
 
     pub(crate) fn apply(&mut self) -> Result<Value> {
-        let mut visit_log = HashSet::new();
+        let mut visit_log = IndexSet::new();
         let root = self.root.clone();
         self.resolve_phase(&root, &mut visit_log)
     }
@@ -123,7 +123,7 @@ impl Scope {
         &mut self,
         at: &Value,
         input: String,
-        visit_log: &mut HashSet<Uuid>,
+        visit_log: &mut IndexSet<Uuid>,
     ) -> Result<String> {
         let mut start_index = -1;
         let original = input.clone();
@@ -183,7 +183,7 @@ impl Scope {
 
     fn resolve_macro(
         &mut self,
-        visit_log: &mut HashSet<Uuid>,
+        visit_log: &mut IndexSet<Uuid>,
         value: &Value,
         input: String,
         is_string: bool,
@@ -200,7 +200,7 @@ impl Scope {
             // We need to find the data of the referenced item.
             match self.symbol_table.get(&path) {
                 Some(data) => {
-                    new_value.data = data.data.clone();
+                    new_value.data.clone_from(&data.data);
                     new_value.type_ = data.type_of();
                     Ok(())
                 }
@@ -213,7 +213,7 @@ impl Scope {
         Ok(new_value.clone())
     }
 
-    fn resolve_phase(&mut self, at: &Value, visit_log: &mut HashSet<Uuid>) -> Result<Value> {
+    fn resolve_phase(&mut self, at: &Value, visit_log: &mut IndexSet<Uuid>) -> Result<Value> {
         let uid = at.uid;
         let result = match at.inner() {
             Data::Macro(key, is_string) => {
@@ -221,7 +221,7 @@ impl Scope {
                 self.resolve_macro(visit_log, at, key.clone(), *is_string)
             }
             Data::Module(children) => {
-                let mut new_children = HashMap::new();
+                let mut new_children = IndexMap::new();
                 for (key, value) in children.iter() {
                     new_children.insert(key.clone(), self.resolve_phase(value, visit_log)?);
                 }
@@ -240,7 +240,7 @@ impl Scope {
                 })
             }
             Data::Section(children) => {
-                let mut new_children = HashMap::new();
+                let mut new_children = IndexMap::new();
                 for (key, value) in children.iter() {
                     new_children.insert(key.clone(), self.resolve_phase(value, visit_log)?);
                 }
@@ -259,7 +259,7 @@ impl Scope {
                 })
             }
             Data::Table(children) => {
-                let mut new_children = HashMap::new();
+                let mut new_children = IndexMap::new();
                 for (key, value) in children.iter() {
                     new_children.insert(key.clone(), self.resolve_phase(value, visit_log)?);
                 }
@@ -278,7 +278,7 @@ impl Scope {
                 })
             }
             Data::Block { labels, children } => {
-                let mut new_children = HashMap::new();
+                let mut new_children = IndexMap::new();
                 for (key, value) in children.iter() {
                     new_children.insert(key.clone(), self.resolve_phase(value, visit_log)?);
                 }

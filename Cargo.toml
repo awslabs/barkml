@@ -16,7 +16,7 @@ binary = ["dep:msgpack_simple"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
 base64 = "0.22"
-chumsky = "0.9"
+indexmap = "2.2"
 logos = "0.14"
 lz4_flex = "0.11"
 msgpack_simple = { version = "1.0", optional = true }

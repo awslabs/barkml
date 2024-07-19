@@ -1,16 +1,14 @@
 use std::fmt::Display;
-use std::io;
 use std::num::ParseIntError;
 use std::path::PathBuf;
 
-use peg::str::LineCol;
 use snafu::Snafu;
 
 use crate::ValueType;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Debug, Snafu)]
+#[derive(Debug, Snafu, PartialEq, Clone)]
 #[snafu(visibility(pub))]
 pub enum Error {
     #[snafu(display("Expected an id for a value"))]
@@ -26,16 +24,10 @@ pub enum Error {
     ))]
     TypeCollision { left: ValueType, right: ValueType },
 
-    #[snafu(display("Invalid semantic version defined '{}': {}", version, source))]
-    SemVer {
-        version: String,
-        source: semver::Error,
-    },
-    #[snafu(display("Invalid version requirement defined '{}': {}", version, source))]
-    SemVerReq {
-        version: String,
-        source: semver::Error,
-    },
+    #[snafu(display("Invalid semantic version defined '{}': {}", version, reason))]
+    SemVer { version: String, reason: String },
+    #[snafu(display("Invalid version requirement defined '{}': {}", version, reason))]
+    SemVerReq { version: String, reason: String },
 
     #[snafu(display("Internal error on resolution due to scopifying a none scopable statement"))]
     NotScopable,
@@ -59,21 +51,16 @@ pub enum Error {
     #[snafu(display("Error parsing BarkML file: \n{reason}"))]
     NewParse { reason: String },
     #[snafu(display("Error parsing BarkML file: {}", source))]
-    Parse {
-        #[snafu(source(from(peg::error::ParseError<LineCol>, Box::new)))]
-        source: Box<peg::error::ParseError<LineCol>>,
-    },
+    Parse { source: crate::lang::error::Error },
     #[cfg(feature = "binary")]
     #[snafu(display(
         "Encoded object is not a proper packed barkml message pack item: {}",
-        source
+        reason
     ))]
-    MsgPackNotExpected {
-        source: msgpack_simple::ConversionError,
-    },
+    MsgPackNotExpected { reason: String },
     #[cfg(feature = "binary")]
-    #[snafu(display("Encoded value is not a proper msgpack value: {}", source))]
-    MsgPackEncoded { source: msgpack_simple::ParseError },
+    #[snafu(display("Encoded value is not a proper msgpack value: {}", reason))]
+    MsgPackEncoded { reason: String },
     #[cfg(feature = "binary")]
     #[snafu(display("Unsupported encoded value in msgpack data"))]
     MsgPackUnsupported,
@@ -91,11 +78,8 @@ pub enum Error {
     #[snafu(display("No modules have been added to this loader to load from"))]
     LoaderNoModules,
 
-    #[snafu(display("IO error occured: {}", source))]
-    Io {
-        #[snafu(source(from(std::io::Error, Box::new)))]
-        source: Box<io::Error>,
-    },
+    #[snafu(display("IO error occured: {}", reason))]
+    Io { reason: String },
     #[snafu(display("{}", message))]
     Custom { message: String },
 }

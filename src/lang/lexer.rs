@@ -1,11 +1,12 @@
 use base64::Engine;
 use logos::{Lexer, Logos};
+use snafu::ResultExt;
 use std::fmt;
 use std::fmt::Formatter;
 use std::hash::{Hash, Hasher};
 
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
-pub(crate) enum Integer {
+pub enum Integer {
     Generic(i64),
     I8(i8),
     I16(i16),
@@ -18,13 +19,10 @@ pub(crate) enum Integer {
 }
 
 #[derive(Logos, Debug, PartialEq, Eq, Clone, Hash)]
-#[logos(skip r"[ \t\f]+")] // Ignore this regex pattern between tokens
+#[logos(error = super::error::Error)]
+#[logos(skip r"[ \t\f\n\r]+")] // Ignore this regex pattern between tokens
 pub enum Token {
     Error,
-
-    #[token("\n")]
-    #[token("\n\r")]
-    NewLine,
 
     #[token("true")]
     #[token("True")]
@@ -67,59 +65,59 @@ pub enum Token {
     Comma,
 
     // Keywords
-    #[token("bool")]
+    #[token("bool", priority = 10)]
     KeyBool,
-    #[token("string")]
+    #[token("string", priority = 10)]
     KeyString,
-    #[token("int")]
+    #[token("int", priority = 10)]
     KeyInt,
-    #[token("i8")]
+    #[token("i8", priority = 10)]
     KeyInt8,
-    #[token("u8")]
+    #[token("u8", priority = 10)]
     KeyUInt8,
-    #[token("i16")]
+    #[token("i16", priority = 10)]
     KeyInt16,
-    #[token("u16")]
+    #[token("u16", priority = 10)]
     KeyUInt16,
-    #[token("i32")]
+    #[token("i32", priority = 10)]
     KeyInt32,
-    #[token("u32")]
+    #[token("u32", priority = 10)]
     KeyUInt32,
-    #[token("i64")]
+    #[token("i64", priority = 10)]
     KeyInt64,
-    #[token("u64")]
+    #[token("u64", priority = 10)]
     KeyUInt64,
-    #[token("float")]
+    #[token("float", priority = 10)]
     KeyFloat,
-    #[token("f64")]
+    #[token("f64", priority = 10)]
     KeyFloat64,
-    #[token("f32")]
+    #[token("f32", priority = 10)]
     KeyFloat32,
-    #[token("bytes")]
+    #[token("bytes", priority = 10)]
     KeyBytes,
-    #[token("version")]
+    #[token("version", priority = 10)]
     KeyVersion,
-    #[token("require")]
+    #[token("require", priority = 10)]
     KeyRequire,
-    #[token("label")]
+    #[token("label", priority = 10)]
     KeyLabel,
-    #[token("array")]
+    #[token("array", priority = 10)]
     KeyArray,
-    #[token("table")]
+    #[token("table", priority = 10)]
     KeyTable,
-    #[token("section")]
+    #[token("section", priority = 10)]
     KeySection,
-    #[token("block")]
+    #[token("block", priority = 10)]
     KeyBlock,
 
     // Unused but reserved
-    #[token("module")]
+    #[token("module", priority = 10)]
     KeyModule,
-    #[token("use")]
+    #[token("use", priority = 10)]
     KeyUse,
-    #[token("as")]
+    #[token("as", priority = 10)]
     KeyAs,
-    #[token("schema")]
+    #[token("schema", priority = 10)]
     KeySchema,
 
     // Integer
@@ -150,16 +148,16 @@ pub enum Token {
     #[regex(r#""[^"\n\r]*""#, quote_string)]
     String(String),
 
-    #[regex(r"[a-zA-Z][a-zA-Z0-9_\-]*", |x| x.slice().to_string())]
+    #[regex(r"[a-zA-Z][a-zA-Z0-9_\-]*", |x| x.slice().to_string(), priority = 5)]
     Identifier(String),
-    #[regex(r"m\![a-zA-Z][a-zA-Z0-9_\-]*", |x| x.slice().trim_start_matches("m!").to_string())]
+    #[regex(r"m\![a-zA-Z][a-zA-Z0-9_\-\.]*", |x| x.slice().trim_start_matches("m!").to_string(), priority = 6)]
     MacroIdentifier(String),
-    #[regex(r"\![a-zA-Z][a-zA-Z0-9_\-]*", |x| x.slice().trim_start_matches('!').to_string())]
+    #[regex(r"\![a-zA-Z][a-zA-Z0-9_\-]*", |x| x.slice().trim_start_matches('!').to_string(), priority = 7)]
     LabelIdentifier(String),
-    #[regex(r"\$[a-zA-Z][a-zA-Z0-9_\-]*", |x| x.slice().trim_start_matches('$').to_string())]
+    #[regex(r"\$[a-zA-Z][a-zA-Z0-9_\-]*", |x| x.slice().trim_start_matches('$').to_string(), priority = 8)]
     ControlIdentifier(String),
 
-    #[regex(r"[0-9]+\.[0-9]+\.[0-9]+(\-[a-z0-9]+(\+[a-z0-9]+)?)?", version_literal)]
+    #[regex(r"([0-9]+\.){2}[0-9]+([-A-Za-z0-9\.]+)?", version_literal)]
     Version(semver::Version),
 
     #[regex(
@@ -181,7 +179,7 @@ impl fmt::Display for Token {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub(crate) enum HashableFloat {
+pub enum HashableFloat {
     Generic(f64),
     Float32(f32),
     Float64(f64),
@@ -234,16 +232,18 @@ fn line_comment(lexer: &mut Lexer<Token>) -> Option<String> {
     Some(comment)
 }
 
-fn version_require(lexer: &mut Lexer<Token>) -> Option<semver::VersionReq> {
+fn version_require(lexer: &mut Lexer<Token>) -> super::error::Result<semver::VersionReq> {
     let slice = lexer.slice();
-    let value = semver::VersionReq::parse(slice).ok()?;
-    Some(value)
+    semver::VersionReq::parse(slice).map_err(|e| super::error::Error::InvalidRequire {
+        reason: e.to_string(),
+    })
 }
 
-fn version_literal(lexer: &mut Lexer<Token>) -> Option<semver::Version> {
+fn version_literal(lexer: &mut Lexer<Token>) -> super::error::Result<semver::Version> {
     let slice = lexer.slice();
-    let value = semver::Version::parse(slice).ok()?;
-    Some(value)
+    semver::Version::parse(slice).map_err(|e| super::error::Error::InvalidVersion {
+        reason: e.to_string(),
+    })
 }
 
 fn quote_string(lexer: &mut Lexer<Token>) -> Option<String> {
@@ -256,12 +256,14 @@ fn quote_string(lexer: &mut Lexer<Token>) -> Option<String> {
     Some(value.to_string())
 }
 
-fn byte_string(lexer: &mut Lexer<Token>) -> Option<Vec<u8>> {
-    let slice = lexer.slice();
-    let value = base64::engine::general_purpose::STANDARD
+fn byte_string(lexer: &mut Lexer<Token>) -> super::error::Result<Vec<u8>> {
+    let slice = lexer
+        .slice()
+        .trim_start_matches("b'")
+        .trim_end_matches('\'');
+    base64::engine::general_purpose::STANDARD
         .decode(slice)
-        .ok()?;
-    Some(value)
+        .context(super::error::InvalidBase64Snafu)
 }
 
 fn macro_string(lexer: &mut Lexer<Token>) -> Option<String> {
@@ -274,35 +276,42 @@ fn macro_string(lexer: &mut Lexer<Token>) -> Option<String> {
     )
 }
 
-fn float(lexer: &mut Lexer<Token>) -> Option<HashableFloat> {
+fn float(lexer: &mut Lexer<Token>) -> super::error::Result<HashableFloat> {
     let slice = lexer.slice();
     if slice.ends_with("f64") {
         let slice = slice.trim_end_matches("f64");
-        return Some(HashableFloat::Float64(slice.parse().ok()?));
+        return Ok(HashableFloat::Float64(
+            slice.parse().context(super::error::InvalidFloatSnafu)?,
+        ));
     }
     if slice.ends_with("f32") {
         let slice = slice.trim_end_matches("f32");
-        return Some(HashableFloat::Float32(slice.parse().ok()?));
+        return Ok(HashableFloat::Float32(
+            slice.parse().context(super::error::InvalidFloatSnafu)?,
+        ));
     }
-    Some(HashableFloat::Generic(slice.parse().ok()?))
+    Ok(HashableFloat::Generic(
+        slice.parse().context(super::error::InvalidFloatSnafu)?,
+    ))
 }
 
 macro_rules! number {
     ($radix_name: ident : $radix: literal [ $($type: ident as $wrap: ident where $suffix: literal),* ] ) => {
         pub(crate) mod $radix_name {
-            pub fn integer(lexer: &mut logos::Lexer<$crate::lang::Token>) -> Option<super::Integer> {
+            use snafu::ResultExt;
+            pub fn integer(lexer: &mut logos::Lexer<$crate::lang::Token>) -> $crate::lang::error::Result<super::Integer> {
                 let slice = lexer.slice().replace('_', "");
                 let slice = slice.as_str();
                 let slice = slice.trim_start_matches("0x").trim_start_matches("0o").trim_start_matches("0b");
                 $(
                     if slice.ends_with($suffix) {
                         let slice = slice.trim_end_matches($suffix);
-                        let value = $type::from_str_radix(slice, $radix).ok()?;
-                        return Some(super::Integer::$wrap(value));
+                        let value = $type::from_str_radix(slice, $radix).context($crate::lang::error::InvalidIntegerSnafu)?;
+                        return Ok(super::Integer::$wrap(value));
                     }
                 )*
-                let value = i64::from_str_radix(slice, $radix).ok()?;
-                Some(super::Integer::Generic(value))
+                let value = i64::from_str_radix(slice, $radix).context($crate::lang::error::InvalidIntegerSnafu)?;
+                Ok(super::Integer::Generic(value))
             }
         }
     }
@@ -349,3 +358,16 @@ number!(binary: 2 [
     i8 as I8 where "i8",
     u8 as U8 where "u8"
 ]);
+
+#[cfg(test)]
+mod test {
+    use logos::Logos;
+
+    use super::Token;
+
+    #[test]
+    fn byte_string() {
+        let tokens = Token::lexer("b'aGVsbG8='").collect::<Vec<_>>();
+        println!("received: {:?}", tokens);
+    }
+}

@@ -65,6 +65,10 @@ pub enum Token {
     Comma,
 
     // Keywords
+    #[token("null", priority = 10)]
+    #[token("nil", priority = 10)]
+    #[token("none", priority = 10)]
+    KeyNull,
     #[token("bool", priority = 10)]
     KeyBool,
     #[token("string", priority = 10)]

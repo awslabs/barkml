@@ -1,3 +1,10 @@
+## 0.6.6
+
+Fixes:
+
+* Comments and Labels weren't propagated to a few value types
+* Null was not being parsed nor reserved
+
 ## 0.6.5
 
 Version is bumping from a .0 -> .5 because there are no major changes in the language syntax but the lexer/parser has been moved away from peg.

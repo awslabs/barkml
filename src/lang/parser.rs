@@ -78,6 +78,7 @@ impl<'source> Parser<'source> {
             Token::KeyUInt32 => Ok(ValueType::U32),
             Token::KeyUInt16 => Ok(ValueType::U16),
             Token::KeyUInt8 => Ok(ValueType::U8),
+            Token::KeyNull => Ok(ValueType::Null),
             Token::KeyBool => Ok(ValueType::Bool),
             Token::KeyFloat64 | Token::KeyFloat => Ok(ValueType::F64),
             Token::KeyFloat32 => Ok(ValueType::F32),
@@ -318,13 +319,18 @@ impl<'source> Parser<'source> {
             span: self.position.clone(),
         })?;
         match token {
+            Token::KeyNull => Ok((
+                Value::new_null(label, comment)
+                    .context(error::ValueSnafu { span: span.clone() })?,
+                ValueType::Null,
+            )),
             Token::False => Ok((
-                Value::new_bool(false, None, None)
+                Value::new_bool(false, label, comment)
                     .context(error::ValueSnafu { span: span.clone() })?,
                 ValueType::Bool,
             )),
             Token::True => Ok((
-                Value::new_bool(true, None, None)
+                Value::new_bool(true, label, comment)
                     .context(error::ValueSnafu { span: span.clone() })?,
                 ValueType::Bool,
             )),

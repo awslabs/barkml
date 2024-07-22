@@ -50,8 +50,11 @@ pub enum Error {
     MacroScopeNotFound { scope: String },
     #[snafu(display("Error parsing BarkML file: \n{reason}"))]
     NewParse { reason: String },
-    #[snafu(display("Error parsing BarkML file: {}", source))]
-    Parse { source: crate::lang::error::Error },
+    #[snafu(display("Error parsing BarkML file: {name} - {}", source))]
+    Parse {
+        name: String,
+        source: crate::lang::error::Error,
+    },
     #[cfg(feature = "binary")]
     #[snafu(display(
         "Encoded object is not a proper packed barkml message pack item: {}",

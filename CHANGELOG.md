@@ -1,3 +1,10 @@
+## 0.6.8
+
+Changes:
+
+* Moves the Lexer and Parser to keep track of line and column
+* Updates StandardLoader to parse each module by itself for filename reporting
+
 ## 0.6.7
 
 Fixes:
@@ -13,7 +20,8 @@ Fixes:
 
 ## 0.6.5
 
-Version is bumping from a .0 -> .5 because there are no major changes in the language syntax but the lexer/parser has been moved away from peg.
+Version is bumping from a .0 -> .5 because there are no major changes in the language syntax but the lexer/parser has
+been moved away from peg.
 
 Changes:
 

@@ -1,7 +1,6 @@
-use snafu::{ensure, OptionExt};
-use std::collections::BTreeMap;
+use snafu::{ensure, OptionExt, ResultExt};
 use std::fs::{read_dir, File};
-use std::io::{Read, Seek};
+use std::io::{Cursor, Read, Seek};
 use std::path::Path;
 
 use crate::error::{self, Result};
@@ -31,21 +30,66 @@ pub trait Loader {
         let module = self.read()?;
         self.macro_resolution(&module)
     }
+}
 
-    fn merge_into(&self, left: &mut Value, right: &Value) -> Result<()> {
+/// Mode of operation for the configuration
+/// loader.
+pub enum LoaderMode {
+    /// Single will load a single file provided to path
+    /// and expects path to be a file.
+    Single,
+    /// Merge will load a single file by the provided name if it exists
+    /// or if there exists a directory named <path>.d will load and merge
+    /// all configuration files inside said directory
+    Merge,
+}
+
+pub enum Modules {
+    Empty,
+    Single(Value),
+    Merged(Value),
+}
+
+impl Modules {
+    pub fn get(&self) -> Value {
+        match self {
+            Self::Empty => Value::new_null(None, None).unwrap(),
+            Self::Single(value) => value.clone(),
+            Self::Merged(value) => value.clone(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Self::Empty)
+    }
+
+    pub fn add(&mut self, module: &Value, is_collision_allowed: bool) -> Result<()> {
+        match self {
+            Self::Empty => Ok(()),
+            Self::Single(_) => Ok(()),
+            Self::Merged(value) => {
+                let mut before = value.clone();
+                Self::merge_into(&mut before, module, is_collision_allowed)?;
+                *value = before;
+                Ok(())
+            }
+        }
+    }
+
+    fn merge_into(left: &mut Value, right: &Value, is_collision_allowed: bool) -> Result<()> {
         match right.inner() {
             Data::Module(right_stmts) => {
                 if let Some(left_stmts) = left.as_module_mut() {
                     for (key, value) in right_stmts {
                         if let Some(target) = left_stmts.get_mut(key) {
-                            self.merge_into(target, value)?;
+                            Self::merge_into(target, value, is_collision_allowed)?;
                         } else {
                             left_stmts.insert(key.clone(), value.clone());
                         }
                     }
                 } else {
                     ensure!(
-                        self.is_collision_allowed(),
+                        is_collision_allowed,
                         error::LoaderMergeCollisionSnafu {
                             id: left.id().unwrap()
                         }
@@ -57,14 +101,14 @@ pub trait Loader {
                 if let Some(left_stmts) = left.as_section_mut() {
                     for (key, value) in right_stmts {
                         if let Some(target) = left_stmts.get_mut(key) {
-                            self.merge_into(target, value)?;
+                            Self::merge_into(target, value, is_collision_allowed)?;
                         } else {
                             left_stmts.insert(key.clone(), value.clone());
                         }
                     }
                 } else {
                     ensure!(
-                        self.is_collision_allowed(),
+                        is_collision_allowed,
                         error::LoaderMergeCollisionSnafu {
                             id: left.id().unwrap()
                         }
@@ -77,14 +121,14 @@ pub trait Loader {
                 if let Some((_, left_stmts)) = left.as_block_mut() {
                     for (key, value) in right_stmts {
                         if let Some(target) = left_stmts.get_mut(key) {
-                            self.merge_into(target, value)?;
+                            Self::merge_into(target, value, is_collision_allowed)?;
                         } else {
                             left_stmts.insert(key.clone(), value.clone());
                         }
                     }
                 } else {
                     ensure!(
-                        self.is_collision_allowed(),
+                        is_collision_allowed,
                         error::LoaderMergeCollisionSnafu {
                             id: left.id().unwrap()
                         }
@@ -94,10 +138,10 @@ pub trait Loader {
             }
             Data::Assignment(value) => {
                 if let Some(left_value) = left.as_assignment_mut() {
-                    self.merge_into(left_value, value)?;
+                    Self::merge_into(left_value, value, is_collision_allowed)?;
                 } else {
                     ensure!(
-                        self.is_collision_allowed(),
+                        is_collision_allowed,
                         error::LoaderMergeCollisionSnafu {
                             id: left.id().unwrap()
                         }
@@ -107,10 +151,10 @@ pub trait Loader {
             }
             Data::Control(value) => {
                 if let Some(left_value) = left.as_control_mut() {
-                    self.merge_into(left_value, value)?;
+                    Self::merge_into(left_value, value, is_collision_allowed)?;
                 } else {
                     ensure!(
-                        self.is_collision_allowed(),
+                        is_collision_allowed,
                         error::LoaderMergeCollisionSnafu {
                             id: left.id().unwrap()
                         }
@@ -122,14 +166,14 @@ pub trait Loader {
                 if let Some(left_map) = left.as_table_mut() {
                     for (key, value) in right_map {
                         if let Some(target) = left_map.get_mut(key) {
-                            self.merge_into(target, value)?;
+                            Self::merge_into(target, value, is_collision_allowed)?;
                         } else {
                             left_map.insert(key.clone(), value.clone());
                         }
                     }
                 } else {
                     ensure!(
-                        self.is_collision_allowed(),
+                        is_collision_allowed,
                         error::LoaderMergeCollisionSnafu {
                             id: "table definition"
                         }
@@ -145,23 +189,11 @@ pub trait Loader {
     }
 }
 
-/// Mode of operation for the configuration
-/// loader.
-pub enum LoaderMode {
-    /// Single will load a single file provided to path
-    /// and expects path to be a file.
-    Single,
-    /// Merge will load a single file by the provided name if it exists
-    /// or if there exists a directory named <path>.d will load and merge
-    /// all configuration files inside said directory
-    Merge,
-}
-
 /// Loader can be used to load a single or directory of configuration files
 /// with user control
 pub struct StandardLoader {
     mode: LoaderMode,
-    modules: BTreeMap<String, String>,
+    module: Modules,
     collisions: bool,
     resolve_macros: bool,
 }
@@ -175,7 +207,7 @@ impl Default for StandardLoader {
     fn default() -> Self {
         Self {
             mode: LoaderMode::Single,
-            modules: BTreeMap::new(),
+            module: Modules::Empty,
             collisions: false,
             resolve_macros: true,
         }
@@ -205,7 +237,15 @@ impl StandardLoader {
             .map_err(|e| error::Error::Io {
                 reason: e.to_string(),
             })?;
-        self.modules.insert(name.to_string(), code.clone());
+        let module = from_str(code.as_str()).context(error::ParseSnafu { name })?;
+        if self.module.is_empty() {
+            match self.mode {
+                LoaderMode::Single => self.module = Modules::Single(module),
+                LoaderMode::Merge => self.module = Modules::Merged(module),
+            }
+        } else {
+            self.module.add(&module, self.is_collision_allowed())?;
+        }
         Ok(())
     }
 
@@ -262,12 +302,10 @@ impl StandardLoader {
     }
 
     /// Adds an inline string as a configuration module
-    pub fn source(&mut self, input: &str) -> Result<&mut Self> {
-        ensure!(
-            !self.modules.contains_key("root"),
-            error::LoaderModuleCollisionSnafu { name: "root" }
-        );
-        self.modules.insert("root".to_string(), input.to_string());
+    pub fn source(&mut self, name: &str, input: &str) -> Result<&mut Self> {
+        let code_bytes = input.as_bytes().to_vec();
+        let mut cursor = Cursor::new(code_bytes);
+        self.add_from_reader(name, &mut cursor)?;
         Ok(self)
     }
 }
@@ -303,14 +341,13 @@ impl Loader for StandardLoader {
     /// Load all the configuration files and return everything as
     /// a single module
     fn read(&self) -> Result<Value> {
-        ensure!(!self.modules.is_empty(), error::LoaderNoModulesSnafu);
-        let code = self
-            .modules
-            .values()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n");
-        from_str(code.as_str())
+        match self.module {
+            Modules::Empty => error::CustomSnafu {
+                message: "no barkml code was read by this loader",
+            }
+            .fail(),
+            _ => Ok(self.module.get().clone()),
+        }
     }
 }
 

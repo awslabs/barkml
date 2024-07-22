@@ -1,22 +1,22 @@
 use super::error::{self, Result};
-use super::{HashableFloat, Integer, Token};
+use super::read::{Read, TokenReader};
+use super::{HashableFloat, Integer, Position, Token};
 use crate::{Value, ValueType};
 use indexmap::IndexMap;
-use logos::{Lexer, SpannedIter};
+use logos::Lexer;
 use snafu::{ensure, OptionExt, ResultExt};
-use std::iter::Peekable;
-use std::ops::Range;
 
 pub struct Parser<'source> {
-    tokens: Peekable<SpannedIter<'source, Token>>,
-    position: Range<usize>,
+    tokens: TokenReader<'source>,
 }
 
 impl<'source> Parser<'source> {
     pub fn new(lexer: Lexer<'source, Token>) -> Self {
         Self {
-            tokens: lexer.spanned().peekable(),
-            position: Range::default(),
+            tokens: TokenReader {
+                lexer: lexer.peekable(),
+                position: Position::default(),
+            },
         }
     }
 
@@ -24,88 +24,75 @@ impl<'source> Parser<'source> {
         self.module()
     }
 
-    fn next(&mut self) -> Option<(Token, Range<usize>)> {
-        let x = self.tokens.next();
-        if let Some((Ok(x), span)) = x.as_ref() {
-            self.position = span.clone();
-            Some((x.clone(), span.clone()))
+    fn comment(&mut self) -> Result<Option<String>> {
+        if let Some(token) = self.tokens.peek()? {
+            match token {
+                Token::LineComment((_, comment)) | Token::MultiLineComment((_, comment)) => {
+                    self.tokens.discard();
+                    Ok(Some(comment.clone()))
+                }
+                _ => Ok(None),
+            }
         } else {
-            None
+            Ok(None)
         }
     }
 
-    fn comment(&mut self) -> Result<Option<String>> {
-        Ok(self
-            .tokens
-            .next_if(|(token, _)| {
-                matches!(
-                    token.as_ref(),
-                    Ok(Token::LineComment(_) | Token::MultiLineComment(_))
-                )
-            })
-            .and_then(|x| x.0.clone().ok())
-            .and_then(|x| match x {
-                Token::LineComment(comment) | Token::MultiLineComment(comment) => {
-                    Some(comment.clone())
-                }
-                _ => None,
-            }))
-    }
-
     fn label(&mut self) -> Result<Option<String>> {
-        Ok(self
-            .tokens
-            .next_if(|(token, _)| matches!(token.as_ref(), Ok(Token::LabelIdentifier(..))))
-            .and_then(|x| x.0.clone().ok())
-            .and_then(|x| match x {
-                Token::LabelIdentifier(comment) => Some(comment.clone()),
-                _ => None,
-            }))
+        if let Some(token) = self.tokens.peek()? {
+            match token {
+                Token::LabelIdentifier((_, label)) => {
+                    self.tokens.discard();
+                    Ok(Some(label.clone()))
+                }
+                _ => Ok(None),
+            }
+        } else {
+            Ok(None)
+        }
     }
 
     fn value_type(&mut self) -> Result<ValueType> {
-        let (token, span) = self.next().context(error::EofSnafu {
-            span: self.position.clone(),
+        let token = self.tokens.next()?.context(error::EofSnafu {
+            position: self.tokens.position(),
         })?;
-        let span = span.clone();
         match token {
-            Token::KeyString => Ok(ValueType::String),
-            Token::KeyInt | Token::KeyInt64 => Ok(ValueType::I64),
-            Token::KeyInt8 => Ok(ValueType::I8),
-            Token::KeyInt16 => Ok(ValueType::I16),
-            Token::KeyInt32 => Ok(ValueType::I32),
-            Token::KeyUInt64 => Ok(ValueType::U64),
-            Token::KeyUInt32 => Ok(ValueType::U32),
-            Token::KeyUInt16 => Ok(ValueType::U16),
-            Token::KeyUInt8 => Ok(ValueType::U8),
-            Token::KeyNull => Ok(ValueType::Null),
-            Token::KeyBool => Ok(ValueType::Bool),
-            Token::KeyFloat64 | Token::KeyFloat => Ok(ValueType::F64),
-            Token::KeyFloat32 => Ok(ValueType::F32),
-            Token::KeyBytes => Ok(ValueType::Bytes),
-            Token::KeyVersion => Ok(ValueType::Version),
-            Token::KeyRequire => Ok(ValueType::Require),
-            Token::KeyLabel => Ok(ValueType::Label),
-            Token::KeyArray => {
-                let (tok, s) = self.next().context(error::EofSnafu { span })?;
+            Token::KeyString(_) => Ok(ValueType::String),
+            Token::KeyInt(_) | Token::KeyInt64(_) => Ok(ValueType::I64),
+            Token::KeyInt8(_) => Ok(ValueType::I8),
+            Token::KeyInt16(_) => Ok(ValueType::I16),
+            Token::KeyInt32(_) => Ok(ValueType::I32),
+            Token::KeyUInt64(_) => Ok(ValueType::U64),
+            Token::KeyUInt32(_) => Ok(ValueType::U32),
+            Token::KeyUInt16(_) => Ok(ValueType::U16),
+            Token::KeyUInt8(_) => Ok(ValueType::U8),
+            Token::KeyNull(_) => Ok(ValueType::Null),
+            Token::KeyBool(_) => Ok(ValueType::Bool),
+            Token::KeyFloat64(_) | Token::KeyFloat(_) => Ok(ValueType::F64),
+            Token::KeyFloat32(_) => Ok(ValueType::F32),
+            Token::KeyBytes(_) => Ok(ValueType::Bytes),
+            Token::KeyVersion(_) => Ok(ValueType::Version),
+            Token::KeyRequire(_) => Ok(ValueType::Require),
+            Token::KeyLabel(_) => Ok(ValueType::Label),
+            Token::KeyArray(position) => {
+                let tok = self.tokens.next()?.context(error::EofSnafu { position })?;
                 ensure!(
-                    tok == Token::LBracket,
+                    matches!(tok, Token::LBracket(_)),
                     error::ExpectedSnafu {
-                        span: s.clone(),
+                        position: tok.position(),
                         expected: "[",
                         got: tok.clone()
                     }
                 );
                 let mut children = Vec::new();
-                while let Some((tok, _)) = self.tokens.peek() {
-                    let tok = tok.as_ref()?;
+                while let Some(tok) = self.tokens.peek()? {
                     match tok {
-                        Token::Comma => {
-                            self.next();
+                        Token::Comma(_) => {
+                            self.tokens.discard();
                             continue;
                         }
-                        Token::RBracket => {
-                            self.next();
+                        Token::RBracket(_) => {
+                            self.tokens.discard();
                             break;
                         }
                         _ => {
@@ -115,50 +102,47 @@ impl<'source> Parser<'source> {
                 }
                 Ok(ValueType::Array(children))
             }
-            Token::KeyTable => {
-                let (tok, s) = self
-                    .next()
-                    .context(error::EofSnafu { span: span.clone() })?;
+            Token::KeyTable(position) => {
+                let tok = self.tokens.next()?.context(error::EofSnafu { position })?;
                 ensure!(
-                    tok == Token::LBrace,
+                    matches!(tok, Token::LBrace(_)),
                     error::ExpectedSnafu {
-                        span: s.clone(),
+                        position: tok.position(),
                         expected: "{",
                         got: tok.clone()
                     }
                 );
                 let mut children = IndexMap::new();
-                while let Some((tok, _)) = self.tokens.peek() {
-                    let tok = tok.as_ref()?;
+                while let Some(tok) = self.tokens.peek()? {
                     match tok {
-                        Token::Comma => {
-                            self.next();
+                        Token::Comma(_) => {
+                            self.tokens.discard();
                             continue;
                         }
-                        Token::RBrace => {
-                            self.next();
+                        Token::RBrace(_) => {
+                            self.tokens.discard();
                             break;
                         }
                         _ => {
-                            let (id, id_span) = self
-                                .next()
-                                .context(error::EofSnafu { span: span.clone() })?;
+                            let id = self.tokens.next()?.context(error::EofSnafu {
+                                position: self.tokens.position(),
+                            })?;
                             let id = match id {
-                                Token::Identifier(id) | Token::String(id) => Ok(id.clone()),
+                                Token::Identifier(id) | Token::String(id) => Ok(id.1.clone()),
                                 got => error::ExpectedSnafu {
-                                    span: id_span.clone(),
+                                    position: got.position(),
                                     expected: "identifier or string value",
                                     got: got.clone(),
                                 }
                                 .fail(),
                             }?;
-                            let (eq, eq_span) = self
-                                .next()
-                                .context(error::EofSnafu { span: span.clone() })?;
+                            let eq = self.tokens.next()?.context(error::EofSnafu {
+                                position: self.tokens.position(),
+                            })?;
                             ensure!(
-                                eq == Token::Colon,
+                                matches!(eq, Token::Colon(_)),
                                 error::ExpectedSnafu {
-                                    span: eq_span.clone(),
+                                    position: eq.position(),
                                     expected: ":",
                                     got: eq.clone()
                                 }
@@ -170,50 +154,47 @@ impl<'source> Parser<'source> {
                 }
                 Ok(ValueType::Table(children))
             }
-            Token::KeyBlock => {
-                let (tok, s) = self
-                    .next()
-                    .context(error::EofSnafu { span: span.clone() })?;
+            Token::KeyBlock(position) => {
+                let tok = self.tokens.next()?.context(error::EofSnafu { position })?;
                 ensure!(
-                    tok == Token::LBrace,
+                    matches!(tok, Token::LBrace(_)),
                     error::ExpectedSnafu {
-                        span: s.clone(),
+                        position: tok.position(),
                         expected: "{",
                         got: tok.clone()
                     }
                 );
                 let mut children = IndexMap::new();
-                while let Some((tok, _)) = self.tokens.peek() {
-                    let tok = tok.as_ref()?;
+                while let Some(tok) = self.tokens.peek()? {
                     match tok {
-                        Token::Comma => {
-                            self.next();
+                        Token::Comma(_) => {
+                            self.tokens.discard();
                             continue;
                         }
-                        Token::RBrace => {
-                            self.next();
+                        Token::RBrace(_) => {
+                            self.tokens.discard();
                             break;
                         }
                         _ => {
-                            let (id, id_span) = self
-                                .next()
-                                .context(error::EofSnafu { span: span.clone() })?;
+                            let id = self.tokens.next()?.context(error::EofSnafu {
+                                position: self.tokens.position(),
+                            })?;
                             let id = match id {
-                                Token::Identifier(id) | Token::String(id) => Ok(id.clone()),
+                                Token::Identifier(id) | Token::String(id) => Ok(id.1.clone()),
                                 got => error::ExpectedSnafu {
-                                    span: id_span.clone(),
+                                    position: got.position(),
                                     expected: "identifier or string value",
                                     got: got.clone(),
                                 }
                                 .fail(),
                             }?;
-                            let (eq, eq_span) = self
-                                .next()
-                                .context(error::EofSnafu { span: span.clone() })?;
+                            let eq = self.tokens.next()?.context(error::EofSnafu {
+                                position: self.tokens.position(),
+                            })?;
                             ensure!(
-                                eq == Token::Colon,
+                                matches!(eq, Token::Colon(_)),
                                 error::ExpectedSnafu {
-                                    span: eq_span.clone(),
+                                    position: eq.position(),
                                     expected: ":",
                                     got: eq.clone()
                                 }
@@ -225,50 +206,47 @@ impl<'source> Parser<'source> {
                 }
                 Ok(ValueType::Block(children))
             }
-            Token::KeySection => {
-                let (tok, s) = self
-                    .next()
-                    .context(error::EofSnafu { span: span.clone() })?;
+            Token::KeySection(position) => {
+                let tok = self.tokens.next()?.context(error::EofSnafu { position })?;
                 ensure!(
-                    tok == Token::LBrace,
+                    matches!(tok, Token::LBrace(_)),
                     error::ExpectedSnafu {
-                        span: s.clone(),
+                        position: tok.position(),
                         expected: "{",
                         got: tok.clone()
                     }
                 );
                 let mut children = IndexMap::new();
-                while let Some((tok, _)) = self.tokens.peek() {
-                    let tok = tok.as_ref()?;
+                while let Some(tok) = self.tokens.peek()? {
                     match tok {
-                        Token::Comma => {
-                            self.next();
+                        Token::Comma(_) => {
+                            self.tokens.discard();
                             continue;
                         }
-                        Token::RBrace => {
-                            self.next();
+                        Token::RBrace(_) => {
+                            self.tokens.discard();
                             break;
                         }
                         _ => {
-                            let (id, id_span) = self
-                                .next()
-                                .context(error::EofSnafu { span: span.clone() })?;
+                            let id = self.tokens.next()?.context(error::EofSnafu {
+                                position: self.tokens.position(),
+                            })?;
                             let id = match id {
-                                Token::Identifier(id) | Token::String(id) => Ok(id.clone()),
+                                Token::Identifier(id) | Token::String(id) => Ok(id.1.clone()),
                                 got => error::ExpectedSnafu {
-                                    span: id_span.clone(),
+                                    position: got.position(),
                                     expected: "identifier or string value",
                                     got: got.clone(),
                                 }
                                 .fail(),
                             }?;
-                            let (eq, eq_span) = self
-                                .next()
-                                .context(error::EofSnafu { span: span.clone() })?;
+                            let eq = self.tokens.next()?.context(error::EofSnafu {
+                                position: self.tokens.position(),
+                            })?;
                             ensure!(
-                                eq == Token::Colon,
+                                matches!(eq, Token::Colon(_)),
                                 error::ExpectedSnafu {
-                                    span: eq_span.clone(),
+                                    position: eq.position(),
                                     expected: ":",
                                     got: eq.clone()
                                 }
@@ -281,7 +259,7 @@ impl<'source> Parser<'source> {
                 Ok(ValueType::Section(children))
             }
             _ => error::OneOfSnafu {
-                span: self.position.clone(),
+                position: self.tokens.position(),
                 list: vec![
                     "string".to_string(),
                     "int".to_string(),
@@ -315,127 +293,111 @@ impl<'source> Parser<'source> {
         let comment = self.comment()?;
         let label = self.label()?;
 
-        let (token, span) = self.next().context(error::EofSnafu {
-            span: self.position.clone(),
+        let token = self.tokens.next()?.context(error::EofSnafu {
+            position: self.tokens.position(),
         })?;
         match token {
-            Token::KeyNull => Ok((
-                Value::new_null(label, comment)
-                    .context(error::ValueSnafu { span: span.clone() })?,
+            Token::KeyNull(position) => Ok((
+                Value::new_null(label, comment).context(error::ValueSnafu { position })?,
                 ValueType::Null,
             )),
-            Token::False => Ok((
-                Value::new_bool(false, label, comment)
-                    .context(error::ValueSnafu { span: span.clone() })?,
+            Token::False(position) => Ok((
+                Value::new_bool(false, label, comment).context(error::ValueSnafu { position })?,
                 ValueType::Bool,
             )),
-            Token::True => Ok((
-                Value::new_bool(true, label, comment)
-                    .context(error::ValueSnafu { span: span.clone() })?,
+            Token::True(position) => Ok((
+                Value::new_bool(true, label, comment).context(error::ValueSnafu { position })?,
                 ValueType::Bool,
             )),
-            Token::Int(Integer::Generic(value)) => Ok((
-                Value::new_int(value, label, comment)
-                    .context(error::ValueSnafu { span: span.clone() })?,
+            Token::Int((position, Integer::Generic(value))) => Ok((
+                Value::new_int(value, label, comment).context(error::ValueSnafu { position })?,
                 ValueType::I64,
             )),
-            Token::Int(Integer::I64(value)) => Ok((
-                Value::new_i64(value, label, comment)
-                    .context(error::ValueSnafu { span: span.clone() })?,
+            Token::Int((position, Integer::I64(value))) => Ok((
+                Value::new_i64(value, label, comment).context(error::ValueSnafu { position })?,
                 ValueType::I64,
             )),
-            Token::Int(Integer::I32(value)) => Ok((
-                Value::new_i32(value, label, comment)
-                    .context(error::ValueSnafu { span: span.clone() })?,
+            Token::Int((position, Integer::I32(value))) => Ok((
+                Value::new_i32(value, label, comment).context(error::ValueSnafu { position })?,
                 ValueType::I32,
             )),
-            Token::Int(Integer::I16(value)) => Ok((
-                Value::new_i16(value, label, comment)
-                    .context(error::ValueSnafu { span: span.clone() })?,
+            Token::Int((position, Integer::I16(value))) => Ok((
+                Value::new_i16(value, label, comment).context(error::ValueSnafu { position })?,
                 ValueType::I16,
             )),
-            Token::Int(Integer::I8(value)) => Ok((
-                Value::new_i8(value, label, comment)
-                    .context(error::ValueSnafu { span: span.clone() })?,
+            Token::Int((position, Integer::I8(value))) => Ok((
+                Value::new_i8(value, label, comment).context(error::ValueSnafu { position })?,
                 ValueType::I8,
             )),
-            Token::Int(Integer::U64(value)) => Ok((
-                Value::new_u64(value, label, comment)
-                    .context(error::ValueSnafu { span: span.clone() })?,
+            Token::Int((position, Integer::U64(value))) => Ok((
+                Value::new_u64(value, label, comment).context(error::ValueSnafu { position })?,
                 ValueType::U64,
             )),
-            Token::Int(Integer::U32(value)) => Ok((
-                Value::new_u32(value, label, comment)
-                    .context(error::ValueSnafu { span: span.clone() })?,
+            Token::Int((position, Integer::U32(value))) => Ok((
+                Value::new_u32(value, label, comment).context(error::ValueSnafu { position })?,
                 ValueType::U32,
             )),
-            Token::Int(Integer::U16(value)) => Ok((
-                Value::new_u16(value, label, comment)
-                    .context(error::ValueSnafu { span: span.clone() })?,
+            Token::Int((position, Integer::U16(value))) => Ok((
+                Value::new_u16(value, label, comment).context(error::ValueSnafu { position })?,
                 ValueType::U16,
             )),
-            Token::Int(Integer::U8(value)) => Ok((
-                Value::new_u8(value, label, comment)
-                    .context(error::ValueSnafu { span: span.clone() })?,
+            Token::Int((position, Integer::U8(value))) => Ok((
+                Value::new_u8(value, label, comment).context(error::ValueSnafu { position })?,
                 ValueType::U8,
             )),
-            Token::Float(HashableFloat::Generic(value)) => Ok((
-                Value::new_float(value, label, comment)
-                    .context(error::ValueSnafu { span: span.clone() })?,
+            Token::Float((position, HashableFloat::Generic(value))) => Ok((
+                Value::new_float(value, label, comment).context(error::ValueSnafu { position })?,
                 ValueType::F64,
             )),
-            Token::Float(HashableFloat::Float32(value)) => Ok((
-                Value::new_f32(value, label, comment)
-                    .context(error::ValueSnafu { span: span.clone() })?,
+            Token::Float((position, HashableFloat::Float32(value))) => Ok((
+                Value::new_f32(value, label, comment).context(error::ValueSnafu { position })?,
                 ValueType::F32,
             )),
-            Token::Float(HashableFloat::Float64(value)) => Ok((
-                Value::new_f64(value, label, comment)
-                    .context(error::ValueSnafu { span: span.clone() })?,
+            Token::Float((position, HashableFloat::Float64(value))) => Ok((
+                Value::new_f64(value, label, comment).context(error::ValueSnafu { position })?,
                 ValueType::F64,
             )),
-            Token::String(value) => Ok((
+            Token::String((position, value)) => Ok((
                 Value::new_string(value.clone(), label, comment)
-                    .context(error::ValueSnafu { span: span.clone() })?,
+                    .context(error::ValueSnafu { position })?,
                 ValueType::String,
             )),
-            Token::MacroString(value) => Ok((
+            Token::MacroString((position, value)) => Ok((
                 Value::new_macro(value.clone(), true, label, comment)
-                    .context(error::ValueSnafu { span: span.clone() })?,
+                    .context(error::ValueSnafu { position })?,
                 ValueType::Macro,
             )),
-            Token::MacroIdentifier(value) => Ok((
+            Token::MacroIdentifier((position, value)) => Ok((
                 Value::new_macro(value.clone(), false, label, comment)
-                    .context(error::ValueSnafu { span: span.clone() })?,
+                    .context(error::ValueSnafu { position })?,
                 ValueType::Macro,
             )),
-            Token::ByteString(value) => Ok((
+            Token::ByteString((position, value)) => Ok((
                 Value::new_bytes(value.clone(), label, comment)
-                    .context(error::ValueSnafu { span: span.clone() })?,
+                    .context(error::ValueSnafu { position })?,
                 ValueType::Bytes,
             )),
-            Token::Version(value) => Ok((
+            Token::Version((position, value)) => Ok((
                 Value::new_version(value.clone(), label, comment)
-                    .context(error::ValueSnafu { span: span.clone() })?,
+                    .context(error::ValueSnafu { position })?,
                 ValueType::Version,
             )),
-            Token::Require(value) => Ok((
+            Token::Require((position, value)) => Ok((
                 Value::new_require(value.clone(), label, comment)
-                    .context(error::ValueSnafu { span: span.clone() })?,
+                    .context(error::ValueSnafu { position })?,
                 ValueType::Require,
             )),
-            Token::LBracket => {
+            Token::LBracket(position) => {
                 let mut children = Vec::new();
                 let mut child_types = Vec::new();
-                while let Some((token, _)) = self.tokens.peek() {
-                    let token = token.as_ref()?;
+                while let Some(token) = self.tokens.peek()? {
                     match token {
-                        Token::Comma => {
-                            self.next();
+                        Token::Comma(_) => {
+                            self.tokens.discard();
                             continue;
                         }
-                        Token::RBracket => {
-                            self.next();
+                        Token::RBracket(_) => {
+                            self.tokens.discard();
                             break;
                         }
                         _ => {
@@ -447,42 +409,40 @@ impl<'source> Parser<'source> {
                 }
                 Ok((
                     Value::new_array(children, label, comment)
-                        .context(error::ValueSnafu { span: span.clone() })?,
+                        .context(error::ValueSnafu { position })?,
                     ValueType::Array(child_types),
                 ))
             }
-            Token::LBrace => {
+            Token::LBrace(position) => {
                 let mut children = IndexMap::new();
                 let mut child_types = IndexMap::new();
-                while let Some((token, child_span)) = self.tokens.peek() {
-                    let token = token.as_ref()?;
-                    let child_span = child_span.clone();
+                while let Some(token) = self.tokens.peek()? {
                     match token {
-                        Token::Comma => {
-                            self.next();
+                        Token::Comma(_) => {
+                            self.tokens.discard();
                             continue;
                         }
-                        Token::RBrace => {
-                            self.next();
+                        Token::RBrace(_) => {
+                            self.tokens.discard();
                             break;
                         }
-                        Token::Identifier(id) | Token::String(id) => {
+                        Token::Identifier((position, id)) | Token::String((position, id)) => {
                             let id = id.clone();
-                            let (next_token, _) = self.next().context(error::EofSnafu {
-                                span: child_span.clone(),
+                            let next_token = self.tokens.next()?.context(error::EofSnafu {
+                                position: position.clone(),
                             })?;
-                            let vtype = if next_token == Token::Colon {
+                            let vtype = if matches!(next_token, Token::Comma(_)) {
                                 Some(self.value_type()?)
                             } else {
                                 None
                             };
-                            let (eq_tok, eq_span) = self.next().context(error::EofSnafu {
-                                span: self.position.clone(),
+                            let eq_tok = self.tokens.next()?.context(error::EofSnafu {
+                                position: position.clone(),
                             })?;
                             ensure!(
-                                eq_tok == Token::Assign,
+                                matches!(eq_tok, Token::Assign(_)),
                                 error::ExpectedSnafu {
-                                    span: eq_span.clone(),
+                                    position: eq_tok.position(),
                                     expected: "=",
                                     got: eq_tok.clone()
                                 }
@@ -493,7 +453,7 @@ impl<'source> Parser<'source> {
                         }
                         _ => {
                             return error::OneOfSnafu {
-                                span: child_span.clone(),
+                                position,
                                 list: vec![
                                     ",".to_string(),
                                     "}".to_string(),
@@ -508,12 +468,12 @@ impl<'source> Parser<'source> {
                 }
                 Ok((
                     Value::new_table(children, label, comment)
-                        .context(error::ValueSnafu { span })?,
+                        .context(error::ValueSnafu { position })?,
                     ValueType::Table(child_types),
                 ))
             }
             _ => error::ExpectedSnafu {
-                span,
+                position: token.position(),
                 expected: "value",
                 got: token,
             }
@@ -524,29 +484,29 @@ impl<'source> Parser<'source> {
     fn statement(&mut self) -> Result<Value> {
         let comment = self.comment()?;
 
-        let (token, span) = self.next().context(error::EofSnafu {
-            span: self.position.clone(),
+        let token = self.tokens.next()?.context(error::EofSnafu {
+            position: self.tokens.position(),
         })?;
         match token {
-            Token::ControlIdentifier(id) => {
-                let (mut eq, mut eq_span) = self
-                    .next()
-                    .context(error::EofSnafu { span: span.clone() })?;
-                let type_ = if eq == Token::Colon {
+            Token::ControlIdentifier((position, id)) => {
+                let mut eq = self.tokens.next()?.context(error::EofSnafu {
+                    position: position.clone(),
+                })?;
+                let type_ = if matches!(eq, Token::Colon(_)) {
                     let type_ = self.value_type()?;
-                    (eq, eq_span) = self.next().context(error::EofSnafu {
-                        span: eq_span.clone(),
+                    eq = self.tokens.next()?.context(error::EofSnafu {
+                        position: eq.position(),
                     })?;
                     Some(type_)
                 } else {
                     None
                 };
                 ensure!(
-                    eq == Token::Assign,
+                    matches!(eq, Token::Assign(_)),
                     error::ExpectedSnafu {
+                        position: eq.position(),
                         expected: "=",
                         got: eq.clone(),
-                        span: eq_span.clone()
                     }
                 );
                 let (value, vtype) = self.value()?;
@@ -554,40 +514,39 @@ impl<'source> Parser<'source> {
                     ensure!(
                         vtype == *type_,
                         error::TypeSnafu {
-                            span: span.clone(),
+                            position: position.clone(),
                             vtype: vtype.clone(),
                             atype: type_.clone()
                         }
                     );
                 }
-                Value::new_control(id.clone(), value, comment, type_)
-                    .context(error::ValueSnafu { span: span.clone() })
+                Value::new_control(id.clone(), value, comment, type_).context(error::ValueSnafu {
+                    position: position.clone(),
+                })
             }
-            Token::Identifier(id) | Token::String(id) => {
-                let (front, _) = self
-                    .tokens
-                    .peek()
-                    .context(error::EofSnafu { span: span.clone() })?;
-                let front = front.as_ref()?;
-                if *front == Token::Colon || *front == Token::Assign {
-                    let (mut eq, mut eq_span) = self
-                        .next()
-                        .context(error::EofSnafu { span: span.clone() })?;
-                    let type_ = if eq == Token::Colon {
+            Token::Identifier((position, id)) | Token::String((position, id)) => {
+                let front = self.tokens.peek()?.context(error::EofSnafu {
+                    position: position.clone(),
+                })?;
+                if matches!(front, Token::Colon(_)) || matches!(front, Token::Assign(_)) {
+                    let mut eq = self.tokens.next()?.context(error::EofSnafu {
+                        position: position.clone(),
+                    })?;
+                    let type_ = if matches!(eq, Token::Colon(_)) {
                         let type_ = self.value_type()?;
-                        (eq, eq_span) = self.next().context(error::EofSnafu {
-                            span: eq_span.clone(),
+                        eq = self.tokens.next()?.context(error::EofSnafu {
+                            position: eq.position(),
                         })?;
                         Some(type_)
                     } else {
                         None
                     };
                     ensure!(
-                        eq == Token::Assign,
+                        matches!(eq, Token::Assign(_)),
                         error::ExpectedSnafu {
+                            position: eq.position(),
                             expected: "=",
                             got: eq.clone(),
-                            span: eq_span.clone()
                         }
                     );
                     let (value, vtype) = self.value()?;
@@ -595,31 +554,32 @@ impl<'source> Parser<'source> {
                         ensure!(
                             vtype == *type_,
                             error::TypeSnafu {
-                                span: span.clone(),
+                                position: position.clone(),
                                 vtype: vtype.clone(),
                                 atype: type_.clone()
                             }
                         );
                     }
-                    Value::new_assignment(id.clone(), value, comment, type_)
-                        .context(error::ValueSnafu { span: span.clone() })
+                    Value::new_assignment(id.clone(), value, comment, type_).context(
+                        error::ValueSnafu {
+                            position: position.clone(),
+                        },
+                    )
                 } else {
                     let mut labels: Vec<String> = Vec::new();
-                    while let Some((label, label_span)) = self.tokens.peek() {
-                        let label = label.clone()?;
-                        let label_span = label_span.clone();
+                    while let Some(label) = self.tokens.peek()? {
                         match label {
-                            Token::LBrace => {
-                                self.next();
+                            Token::LBrace(_) => {
+                                self.tokens.discard();
                                 break;
                             }
-                            Token::Identifier(id) | Token::String(id) => {
-                                self.next();
+                            Token::Identifier((_, id)) | Token::String((_, id)) => {
+                                self.tokens.discard();
                                 labels.push(id.clone());
                             }
                             _ => {
                                 return error::OneOfSnafu {
-                                    span: label_span.clone(),
+                                    position: label.position(),
                                     got: label.clone(),
                                     list: vec![
                                         "{".to_string(),
@@ -632,11 +592,10 @@ impl<'source> Parser<'source> {
                         }
                     }
                     let mut children = IndexMap::new();
-                    while let Some((stmt, _)) = self.tokens.peek() {
-                        let stmt = stmt.clone()?;
+                    while let Some(stmt) = self.tokens.peek()? {
                         match stmt {
-                            Token::RBrace => {
-                                self.next();
+                            Token::RBrace(_) => {
+                                self.tokens.discard();
                                 break;
                             }
                             _ => {
@@ -645,14 +604,17 @@ impl<'source> Parser<'source> {
                             }
                         }
                     }
-                    Value::new_block(id.clone(), labels, children, comment)
-                        .context(error::ValueSnafu { span: span.clone() })
+                    Value::new_block(id.clone(), labels, children, comment).context(
+                        error::ValueSnafu {
+                            position: position.clone(),
+                        },
+                    )
                 }
             }
             value => error::ExpectedSnafu {
                 expected: "statement",
                 got: value.clone(),
-                span: span.clone(),
+                position: value.position(),
             }
             .fail(),
         }
@@ -660,50 +622,49 @@ impl<'source> Parser<'source> {
 
     fn module(&mut self) -> Result<Value> {
         let mut children = IndexMap::new();
-        while let Some((token, span)) = self.tokens.peek() {
-            let token = token.clone()?;
-            let span = span.clone();
+        while let Some(token) = self.tokens.peek()? {
             let comment = self.comment()?;
             match token {
-                Token::LBracket => {
-                    self.next();
-                    let (id, id_span) = self
-                        .next()
-                        .context(error::EofSnafu { span: span.clone() })?;
+                Token::LBracket(position) => {
+                    self.tokens.discard();
+                    let id = self.tokens.next()?.context(error::EofSnafu {
+                        position: position.clone(),
+                    })?;
                     let id = match id {
-                        Token::Identifier(id) => Ok(id),
-                        Token::String(id) => Ok(id),
+                        Token::Identifier((_, id)) => Ok(id),
+                        Token::String((_, id)) => Ok(id),
                         value => error::ExpectedSnafu {
-                            span: id_span.clone(),
+                            position: value.position(),
                             expected: "identifier or string",
                             got: value.clone(),
                         }
                         .fail(),
                     }?;
-                    let (close, close_span) = self
-                        .next()
-                        .context(error::EofSnafu { span: span.clone() })?;
+                    let close = self.tokens.next()?.context(error::EofSnafu {
+                        position: self.tokens.position(),
+                    })?;
                     ensure!(
-                        close == Token::RBracket,
+                        matches!(close, Token::RBracket(_)),
                         error::ExpectedSnafu {
-                            span: close_span.clone(),
+                            position: close.position(),
                             expected: "]",
                             got: close.clone()
                         }
                     );
                     let mut statements = IndexMap::new();
-                    while let Some((stmt, _)) = self.tokens.peek() {
-                        let stmt = stmt.clone()?;
+                    while let Some(stmt) = self.tokens.peek()? {
                         match stmt {
-                            Token::LBracket => break,
+                            Token::LBracket(_) => break,
                             _ => {
                                 let value = self.statement()?;
                                 statements.insert(value.inject_id().unwrap(), value);
                             }
                         }
                     }
-                    let child = Value::new_section(id, statements, comment)
-                        .context(error::ValueSnafu { span: span.clone() })?;
+                    let child =
+                        Value::new_section(id, statements, comment).context(error::ValueSnafu {
+                            position: position.clone(),
+                        })?;
                     children.insert(child.inject_id().unwrap(), child);
                 }
                 _ => {
@@ -712,7 +673,9 @@ impl<'source> Parser<'source> {
                 }
             }
         }
-        Value::new_module(children, None).context(error::ValueSnafu { span: 0..0 })
+        Value::new_module(children, None).context(error::ValueSnafu {
+            position: Position::default(),
+        })
     }
 }
 

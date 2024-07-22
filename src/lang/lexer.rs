@@ -144,12 +144,12 @@ pub enum Token {
     )]
     Float(HashableFloat),
 
-    #[regex(r"m'[^'\r\n]*'", macro_string)]
+    #[regex(r"m'[^']*'", macro_string)]
     MacroString(String),
     #[regex(r"b'[-A-Za-z0-9+/]*={0,3}'", byte_string)]
     ByteString(Vec<u8>),
-    #[regex(r"'[^'\n\r]*'", quote_string)]
-    #[regex(r#""[^"\n\r]*""#, quote_string)]
+    #[regex(r"'[^']*'", quote_string)]
+    #[regex(r#""[^"]*""#, quote_string)]
     String(String),
 
     #[regex(r"[a-zA-Z][a-zA-Z0-9_\-]*", |x| x.slice().to_string(), priority = 5)]

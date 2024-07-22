@@ -785,8 +785,6 @@ mod test {
             .expect("path detection failed")
             .load()
             .expect("load failed");
-        println!("left:\n {}", result);
-        println!("right:\n {}", _expected.unwrap());
         let children = result.as_module().expect("was not a module");
         assert_matches!(children, _expected);
     }

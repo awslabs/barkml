@@ -1,3 +1,9 @@
+## 0.6.7
+
+Fixes:
+
+* Multiline strings were not properly lexing
+
 ## 0.6.6
 
 Fixes:

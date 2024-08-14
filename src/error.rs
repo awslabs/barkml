@@ -55,18 +55,13 @@ pub enum Error {
         name: String,
         source: crate::lang::error::Error,
     },
+
     #[cfg(feature = "binary")]
-    #[snafu(display(
-        "Encoded object is not a proper packed barkml message pack item: {}",
-        reason
-    ))]
-    MsgPackNotExpected { reason: String },
+    #[snafu(display("Failed to encode barkml into messagepack: {reason}"))]
+    MsgPackSerialize { reason: String },
     #[cfg(feature = "binary")]
-    #[snafu(display("Encoded value is not a proper msgpack value: {}", reason))]
-    MsgPackEncoded { reason: String },
-    #[cfg(feature = "binary")]
-    #[snafu(display("Unsupported encoded value in msgpack data"))]
-    MsgPackUnsupported,
+    #[snafu(display("Failed to decode barkml from messagepack: {reason}"))]
+    MsgPackDeserialize { reason: String },
 
     #[snafu(display("Provided path does not exist: {}", path.display()))]
     LoaderNotFound { path: PathBuf },

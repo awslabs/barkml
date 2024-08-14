@@ -7,15 +7,18 @@ use std::hash::{Hash, Hasher};
 
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub enum Integer {
-    Generic(i64),
+    Signed(i64),
     I8(i8),
     I16(i16),
     I32(i32),
     I64(i64),
+    I128(i128),
+    Unsigned(u64),
     U8(u8),
     U16(u16),
     U32(u32),
     U64(u64),
+    U128(u128),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
@@ -104,6 +107,8 @@ pub enum Token {
     KeyString(Position),
     #[token("int", base_callback, priority = 10)]
     KeyInt(Position),
+    #[token("uint", base_callback, priority = 10)]
+    KeyUInt(Position),
     #[token("i8", base_callback, priority = 10)]
     KeyInt8(Position),
     #[token("u8", base_callback, priority = 10)]
@@ -120,6 +125,10 @@ pub enum Token {
     KeyInt64(Position),
     #[token("u64", base_callback, priority = 10)]
     KeyUInt64(Position),
+    #[token("i128", base_callback, priority = 10)]
+    KeyInt128(Position),
+    #[token("u128", base_callback, priority = 10)]
+    KeyUInt128(Position),
     #[token("float", base_callback, priority = 10)]
     KeyFloat(Position),
     #[token("f64", base_callback, priority = 10)]
@@ -154,14 +163,20 @@ pub enum Token {
     KeySchema(Position),
 
     // Integer
-    #[regex(r"[+-]?[0-9][0-9_]*(i64|i32|i16|i8|u64|u32|u16|u8)?", decimal::integer)]
     #[regex(
-        r"[+-]?0x[0-9a-fA-F][0-9a-fA-F_]*(i64|i32|i16|i8|u64|u32|u16|u8)?",
+        r"[+-]?[0-9][0-9_]*(i128|i64|i32|i16|i8|u128|u64|u32|u16|u8)?",
+        decimal::integer
+    )]
+    #[regex(
+        r"[+-]?0x[0-9a-fA-F][0-9a-fA-F_]*(i128|i64|i32|i16|i8|u128|u64|u32|u16|u8)?",
         hexadecimal::integer
     )]
-    #[regex(r"[+-]?0o[0-7][0-7_]*(i64|i32|i16|i8|u64|u32|u16|u8)?", octal::integer)]
     #[regex(
-        r"[+-]?0b[0-1][0-1_]*(i64|i32|i16|i8|u64|u32|u16|u8)?",
+        r"[+-]?0o[0-7][0-7_]*(i128|i64|i32|i16|i8|u128|u64|u32|u16|u8)?",
+        octal::integer
+    )]
+    #[regex(
+        r"[+-]?0b[0-1][0-1_]*(i128|i64|i32|i16|i8|u128|u64|u32|u16|u8)?",
         binary::integer
     )]
     Int((Position, Integer)),
@@ -439,13 +454,16 @@ macro_rules! number {
                     }
                 )*
                 let value = i64::from_str_radix(slice, $radix).context($crate::lang::error::InvalidIntegerSnafu)?;
-                Ok((position, super::Integer::Generic(value)))
+                Ok((position, super::Integer::Signed(value)))
             }
         }
     }
 }
 
 number!(decimal: 10 [
+    u64 as Unsigned where "uint",
+    i128 as I128 where "i128",
+    u128 as U128 where "u128",
     i64 as I64 where "i64",
     u64 as U64 where "u64",
     i32 as I32 where "i32",
@@ -457,6 +475,9 @@ number!(decimal: 10 [
 ]);
 
 number!(hexadecimal: 16 [
+    u64 as Unsigned where "uint",
+    i128 as I128 where "i128",
+    u128 as U128 where "u128",
     i64 as I64 where "i64",
     u64 as U64 where "u64",
     i32 as I32 where "i32",
@@ -467,6 +488,9 @@ number!(hexadecimal: 16 [
     u8 as U8 where "u8"
 ]);
 number!(octal: 8 [
+    u64 as Unsigned where "uint",
+    i128 as I128 where "i128",
+    u128 as U128 where "u128",
     i64 as I64 where "i64",
     u64 as U64 where "u64",
     i32 as I32 where "i32",
@@ -477,6 +501,9 @@ number!(octal: 8 [
     u8 as U8 where "u8"
 ]);
 number!(binary: 2 [
+    u64 as Unsigned where "uint",
+    i128 as I128 where "i128",
+    u128 as U128 where "u128",
     i64 as I64 where "i64",
     u64 as U64 where "u64",
     i32 as I32 where "i32",

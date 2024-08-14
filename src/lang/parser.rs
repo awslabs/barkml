@@ -1,7 +1,7 @@
 use super::error::{self, Result};
 use super::read::{Read, TokenReader};
 use super::{HashableFloat, Integer, Position, Token};
-use crate::{Value, ValueType};
+use crate::lang::ast::{Metadata, Statement, Value, ValueType};
 use indexmap::IndexMap;
 use logos::Lexer;
 use snafu::{ensure, OptionExt, ResultExt};
@@ -20,36 +20,27 @@ impl<'source> Parser<'source> {
         }
     }
 
-    pub fn parse(&mut self) -> Result<Value> {
+    pub fn parse(&mut self) -> Result<Statement> {
         self.module()
     }
 
-    fn comment(&mut self) -> Result<Option<String>> {
-        if let Some(token) = self.tokens.peek()? {
-            match token {
-                Token::LineComment((_, comment)) | Token::MultiLineComment((_, comment)) => {
-                    self.tokens.discard();
-                    Ok(Some(comment.clone()))
-                }
-                _ => Ok(None),
-            }
-        } else {
-            Ok(None)
+    fn metadata(&mut self) -> Result<Metadata> {
+        let mut meta = Metadata {
+            comment: None,
+            label: None,
+        };
+        if let Some(Token::LineComment((_, comment)) | Token::MultiLineComment((_, comment))) =
+            self.tokens.peek()?
+        {
+            self.tokens.discard();
+            meta.comment = Some(comment.clone());
         }
-    }
+        if let Some(Token::LabelIdentifier((_, label))) = self.tokens.peek()? {
+            self.tokens.discard();
+            meta.label = Some(label.clone())
+        }
 
-    fn label(&mut self) -> Result<Option<String>> {
-        if let Some(token) = self.tokens.peek()? {
-            match token {
-                Token::LabelIdentifier((_, label)) => {
-                    self.tokens.discard();
-                    Ok(Some(label.clone()))
-                }
-                _ => Ok(None),
-            }
-        } else {
-            Ok(None)
-        }
+        Ok(meta)
     }
 
     fn value_type(&mut self) -> Result<ValueType> {
@@ -58,10 +49,14 @@ impl<'source> Parser<'source> {
         })?;
         match token {
             Token::KeyString(_) => Ok(ValueType::String),
-            Token::KeyInt(_) | Token::KeyInt64(_) => Ok(ValueType::I64),
+            Token::KeyInt(_) => Ok(ValueType::IGeneric),
             Token::KeyInt8(_) => Ok(ValueType::I8),
             Token::KeyInt16(_) => Ok(ValueType::I16),
             Token::KeyInt32(_) => Ok(ValueType::I32),
+            Token::KeyInt64(_) => Ok(ValueType::I64),
+            Token::KeyInt128(_) => Ok(ValueType::I128),
+            Token::KeyUInt(_) => Ok(ValueType::UGeneric),
+            Token::KeyUInt128(_) => Ok(ValueType::U128),
             Token::KeyUInt64(_) => Ok(ValueType::U64),
             Token::KeyUInt32(_) => Ok(ValueType::U32),
             Token::KeyUInt16(_) => Ok(ValueType::U16),
@@ -154,110 +149,6 @@ impl<'source> Parser<'source> {
                 }
                 Ok(ValueType::Table(children))
             }
-            Token::KeyBlock(position) => {
-                let tok = self.tokens.next()?.context(error::EofSnafu { position })?;
-                ensure!(
-                    matches!(tok, Token::LBrace(_)),
-                    error::ExpectedSnafu {
-                        position: tok.position(),
-                        expected: "{",
-                        got: tok.clone()
-                    }
-                );
-                let mut children = IndexMap::new();
-                while let Some(tok) = self.tokens.peek()? {
-                    match tok {
-                        Token::Comma(_) => {
-                            self.tokens.discard();
-                            continue;
-                        }
-                        Token::RBrace(_) => {
-                            self.tokens.discard();
-                            break;
-                        }
-                        _ => {
-                            let id = self.tokens.next()?.context(error::EofSnafu {
-                                position: self.tokens.position(),
-                            })?;
-                            let id = match id {
-                                Token::Identifier(id) | Token::String(id) => Ok(id.1.clone()),
-                                got => error::ExpectedSnafu {
-                                    position: got.position(),
-                                    expected: "identifier or string value",
-                                    got: got.clone(),
-                                }
-                                .fail(),
-                            }?;
-                            let eq = self.tokens.next()?.context(error::EofSnafu {
-                                position: self.tokens.position(),
-                            })?;
-                            ensure!(
-                                matches!(eq, Token::Colon(_)),
-                                error::ExpectedSnafu {
-                                    position: eq.position(),
-                                    expected: ":",
-                                    got: eq.clone()
-                                }
-                            );
-                            let subtype = self.value_type()?;
-                            children.insert(id, subtype);
-                        }
-                    }
-                }
-                Ok(ValueType::Block(children))
-            }
-            Token::KeySection(position) => {
-                let tok = self.tokens.next()?.context(error::EofSnafu { position })?;
-                ensure!(
-                    matches!(tok, Token::LBrace(_)),
-                    error::ExpectedSnafu {
-                        position: tok.position(),
-                        expected: "{",
-                        got: tok.clone()
-                    }
-                );
-                let mut children = IndexMap::new();
-                while let Some(tok) = self.tokens.peek()? {
-                    match tok {
-                        Token::Comma(_) => {
-                            self.tokens.discard();
-                            continue;
-                        }
-                        Token::RBrace(_) => {
-                            self.tokens.discard();
-                            break;
-                        }
-                        _ => {
-                            let id = self.tokens.next()?.context(error::EofSnafu {
-                                position: self.tokens.position(),
-                            })?;
-                            let id = match id {
-                                Token::Identifier(id) | Token::String(id) => Ok(id.1.clone()),
-                                got => error::ExpectedSnafu {
-                                    position: got.position(),
-                                    expected: "identifier or string value",
-                                    got: got.clone(),
-                                }
-                                .fail(),
-                            }?;
-                            let eq = self.tokens.next()?.context(error::EofSnafu {
-                                position: self.tokens.position(),
-                            })?;
-                            ensure!(
-                                matches!(eq, Token::Colon(_)),
-                                error::ExpectedSnafu {
-                                    position: eq.position(),
-                                    expected: ":",
-                                    got: eq.clone()
-                                }
-                            );
-                            let subtype = self.value_type()?;
-                            children.insert(id, subtype);
-                        }
-                    }
-                }
-                Ok(ValueType::Section(children))
-            }
             _ => error::OneOfSnafu {
                 position: self.tokens.position(),
                 list: vec![
@@ -280,8 +171,6 @@ impl<'source> Parser<'source> {
                     "require".to_string(),
                     "array".to_string(),
                     "table".to_string(),
-                    "block".to_string(),
-                    "section".to_string(),
                 ],
                 got: token.clone(),
             }
@@ -290,104 +179,75 @@ impl<'source> Parser<'source> {
     }
 
     fn value(&mut self) -> Result<(Value, ValueType)> {
-        let comment = self.comment()?;
-        let label = self.label()?;
+        let meta = self.metadata()?;
 
         let token = self.tokens.next()?.context(error::EofSnafu {
             position: self.tokens.position(),
         })?;
         match token {
-            Token::KeyNull(position) => Ok((
-                Value::new_null(label, comment).context(error::ValueSnafu { position })?,
-                ValueType::Null,
-            )),
-            Token::False(position) => Ok((
-                Value::new_bool(false, label, comment).context(error::ValueSnafu { position })?,
-                ValueType::Bool,
-            )),
-            Token::True(position) => Ok((
-                Value::new_bool(true, label, comment).context(error::ValueSnafu { position })?,
-                ValueType::Bool,
-            )),
-            Token::Int((position, Integer::Generic(value))) => Ok((
-                Value::new_int(value, label, comment).context(error::ValueSnafu { position })?,
-                ValueType::I64,
-            )),
-            Token::Int((position, Integer::I64(value))) => Ok((
-                Value::new_i64(value, label, comment).context(error::ValueSnafu { position })?,
-                ValueType::I64,
-            )),
-            Token::Int((position, Integer::I32(value))) => Ok((
-                Value::new_i32(value, label, comment).context(error::ValueSnafu { position })?,
-                ValueType::I32,
-            )),
-            Token::Int((position, Integer::I16(value))) => Ok((
-                Value::new_i16(value, label, comment).context(error::ValueSnafu { position })?,
-                ValueType::I16,
-            )),
-            Token::Int((position, Integer::I8(value))) => Ok((
-                Value::new_i8(value, label, comment).context(error::ValueSnafu { position })?,
-                ValueType::I8,
-            )),
-            Token::Int((position, Integer::U64(value))) => Ok((
-                Value::new_u64(value, label, comment).context(error::ValueSnafu { position })?,
-                ValueType::U64,
-            )),
-            Token::Int((position, Integer::U32(value))) => Ok((
-                Value::new_u32(value, label, comment).context(error::ValueSnafu { position })?,
-                ValueType::U32,
-            )),
-            Token::Int((position, Integer::U16(value))) => Ok((
-                Value::new_u16(value, label, comment).context(error::ValueSnafu { position })?,
-                ValueType::U16,
-            )),
-            Token::Int((position, Integer::U8(value))) => Ok((
-                Value::new_u8(value, label, comment).context(error::ValueSnafu { position })?,
-                ValueType::U8,
-            )),
-            Token::Float((position, HashableFloat::Generic(value))) => Ok((
-                Value::new_float(value, label, comment).context(error::ValueSnafu { position })?,
-                ValueType::F64,
-            )),
-            Token::Float((position, HashableFloat::Float32(value))) => Ok((
-                Value::new_f32(value, label, comment).context(error::ValueSnafu { position })?,
-                ValueType::F32,
-            )),
-            Token::Float((position, HashableFloat::Float64(value))) => Ok((
-                Value::new_f64(value, label, comment).context(error::ValueSnafu { position })?,
-                ValueType::F64,
-            )),
-            Token::String((position, value)) => Ok((
-                Value::new_string(value.clone(), label, comment)
-                    .context(error::ValueSnafu { position })?,
-                ValueType::String,
-            )),
-            Token::MacroString((position, value)) => Ok((
-                Value::new_macro(value.clone(), true, label, comment)
-                    .context(error::ValueSnafu { position })?,
-                ValueType::Macro,
-            )),
-            Token::MacroIdentifier((position, value)) => Ok((
-                Value::new_macro(value.clone(), false, label, comment)
-                    .context(error::ValueSnafu { position })?,
-                ValueType::Macro,
-            )),
-            Token::ByteString((position, value)) => Ok((
-                Value::new_bytes(value.clone(), label, comment)
-                    .context(error::ValueSnafu { position })?,
-                ValueType::Bytes,
-            )),
-            Token::Version((position, value)) => Ok((
-                Value::new_version(value.clone(), label, comment)
-                    .context(error::ValueSnafu { position })?,
-                ValueType::Version,
-            )),
-            Token::Require((position, value)) => Ok((
-                Value::new_require(value.clone(), label, comment)
-                    .context(error::ValueSnafu { position })?,
-                ValueType::Require,
-            )),
-            Token::LBracket(position) => {
+            Token::KeyNull(_) => Ok((Value::new_null(meta), ValueType::Null)),
+            Token::False(_) => Ok((Value::new_bool(false, meta), ValueType::Bool)),
+            Token::True(_) => Ok((Value::new_bool(true, meta), ValueType::Bool)),
+            Token::Int((_, Integer::Signed(value))) => {
+                Ok((Value::new_int(value, meta), ValueType::IGeneric))
+            }
+            Token::Int((_, Integer::Unsigned(value))) => {
+                Ok((Value::new_uint(value, meta), ValueType::UGeneric))
+            }
+            Token::Int((_, Integer::I128(value))) => {
+                Ok((Value::new_i128(value, meta), ValueType::I128))
+            }
+            Token::Int((_, Integer::I64(value))) => {
+                Ok((Value::new_i64(value, meta), ValueType::I64))
+            }
+            Token::Int((_, Integer::I32(value))) => {
+                Ok((Value::new_i32(value, meta), ValueType::I32))
+            }
+            Token::Int((_, Integer::I16(value))) => {
+                Ok((Value::new_i16(value, meta), ValueType::I16))
+            }
+            Token::Int((_, Integer::I8(value))) => Ok((Value::new_i8(value, meta), ValueType::I8)),
+            Token::Int((_, Integer::U128(value))) => {
+                Ok((Value::new_u128(value, meta), ValueType::U128))
+            }
+            Token::Int((_, Integer::U64(value))) => {
+                Ok((Value::new_u64(value, meta), ValueType::U64))
+            }
+            Token::Int((_, Integer::U32(value))) => {
+                Ok((Value::new_u32(value, meta), ValueType::U32))
+            }
+            Token::Int((_, Integer::U16(value))) => {
+                Ok((Value::new_u16(value, meta), ValueType::U16))
+            }
+            Token::Int((_, Integer::U8(value))) => Ok((Value::new_u8(value, meta), ValueType::U8)),
+            Token::Float((_, HashableFloat::Generic(value))) => {
+                Ok((Value::new_float(value, meta), ValueType::FGeneric))
+            }
+            Token::Float((_, HashableFloat::Float32(value))) => {
+                Ok((Value::new_f32(value, meta), ValueType::F32))
+            }
+            Token::Float((_, HashableFloat::Float64(value))) => {
+                Ok((Value::new_f64(value, meta), ValueType::F64))
+            }
+            Token::String((_, value)) => {
+                Ok((Value::new_string(value.clone(), meta), ValueType::String))
+            }
+            Token::MacroString((_, value)) => {
+                Ok((Value::new_macro(value.clone(), meta), ValueType::Macro))
+            }
+            Token::MacroIdentifier((_, value)) => {
+                Ok((Value::new_macro(value.clone(), meta), ValueType::Macro))
+            }
+            Token::ByteString((_, value)) => {
+                Ok((Value::new_bytes(value.clone(), meta), ValueType::Bytes))
+            }
+            Token::Version((_, value)) => {
+                Ok((Value::new_version(value.clone(), meta), ValueType::Version))
+            }
+            Token::Require((_, value)) => {
+                Ok((Value::new_require(value.clone(), meta), ValueType::Require))
+            }
+            Token::LBracket(_) => {
                 let mut children = Vec::new();
                 let mut child_types = Vec::new();
                 while let Some(token) = self.tokens.peek()? {
@@ -408,8 +268,7 @@ impl<'source> Parser<'source> {
                     };
                 }
                 Ok((
-                    Value::new_array(children, label, comment)
-                        .context(error::ValueSnafu { position })?,
+                    Value::new_array(children, meta),
                     ValueType::Array(child_types),
                 ))
             }
@@ -467,8 +326,7 @@ impl<'source> Parser<'source> {
                     }
                 }
                 Ok((
-                    Value::new_table(children, label, comment)
-                        .context(error::ValueSnafu { position })?,
+                    Value::new_table(children, meta),
                     ValueType::Table(child_types),
                 ))
             }
@@ -481,8 +339,8 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn statement(&mut self) -> Result<Value> {
-        let comment = self.comment()?;
+    fn statement(&mut self) -> Result<Statement> {
+        let meta = self.metadata()?;
 
         let token = self.tokens.next()?.context(error::EofSnafu {
             position: self.tokens.position(),
@@ -512,7 +370,7 @@ impl<'source> Parser<'source> {
                 let (value, vtype) = self.value()?;
                 if let Some(type_) = type_.as_ref() {
                     ensure!(
-                        vtype == *type_,
+                        vtype.can_assign(type_),
                         error::TypeSnafu {
                             position: position.clone(),
                             vtype: vtype.clone(),
@@ -520,9 +378,8 @@ impl<'source> Parser<'source> {
                         }
                     );
                 }
-                Value::new_control(id.clone(), value, comment, type_).context(error::ValueSnafu {
-                    position: position.clone(),
-                })
+                Statement::new_control(id.as_str(), type_, value, meta)
+                    .context(error::ValueSnafu { position })
             }
             Token::Identifier((position, id)) | Token::String((position, id)) => {
                 let front = self.tokens.peek()?.context(error::EofSnafu {
@@ -552,7 +409,7 @@ impl<'source> Parser<'source> {
                     let (value, vtype) = self.value()?;
                     if let Some(type_) = type_.as_ref() {
                         ensure!(
-                            vtype == *type_,
+                            vtype.can_assign(type_),
                             error::TypeSnafu {
                                 position: position.clone(),
                                 vtype: vtype.clone(),
@@ -560,34 +417,22 @@ impl<'source> Parser<'source> {
                             }
                         );
                     }
-                    Value::new_assignment(id.clone(), value, comment, type_).context(
-                        error::ValueSnafu {
-                            position: position.clone(),
-                        },
-                    )
+                    Statement::new_assign(id.as_str(), type_, value, meta)
+                        .context(error::ValueSnafu { position })
                 } else {
-                    let mut labels: Vec<String> = Vec::new();
+                    let mut labels: Vec<Value> = Vec::new();
                     while let Some(label) = self.tokens.peek()? {
                         match label {
                             Token::LBrace(_) => {
                                 self.tokens.discard();
                                 break;
                             }
-                            Token::Identifier((_, id)) | Token::String((_, id)) => {
+                            Token::Comma(_) => {
                                 self.tokens.discard();
-                                labels.push(id.clone());
+                                continue;
                             }
                             _ => {
-                                return error::OneOfSnafu {
-                                    position: label.position(),
-                                    got: label.clone(),
-                                    list: vec![
-                                        "{".to_string(),
-                                        "identifier".to_string(),
-                                        "string".to_string(),
-                                    ],
-                                }
-                                .fail();
+                                labels.push(self.value()?.0);
                             }
                         }
                     }
@@ -600,15 +445,11 @@ impl<'source> Parser<'source> {
                             }
                             _ => {
                                 let value = self.statement()?;
-                                children.insert(value.inject_id().unwrap(), value);
+                                children.insert(value.inject_id(), value);
                             }
                         }
                     }
-                    Value::new_block(id.clone(), labels, children, comment).context(
-                        error::ValueSnafu {
-                            position: position.clone(),
-                        },
-                    )
+                    Ok(Statement::new_block(id.as_str(), labels, children, meta))
                 }
             }
             value => error::ExpectedSnafu {
@@ -620,10 +461,11 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn module(&mut self) -> Result<Value> {
+    fn module(&mut self) -> Result<Statement> {
+        let parent_meta = self.metadata()?;
         let mut children = IndexMap::new();
         while let Some(token) = self.tokens.peek()? {
-            let comment = self.comment()?;
+            let meta = self.metadata()?;
             match token {
                 Token::LBracket(position) => {
                     self.tokens.discard();
@@ -657,33 +499,29 @@ impl<'source> Parser<'source> {
                             Token::LBracket(_) => break,
                             _ => {
                                 let value = self.statement()?;
-                                statements.insert(value.inject_id().unwrap(), value);
+                                statements.insert(value.inject_id(), value);
                             }
                         }
                     }
-                    let child =
-                        Value::new_section(id, statements, comment).context(error::ValueSnafu {
-                            position: position.clone(),
-                        })?;
-                    children.insert(child.inject_id().unwrap(), child);
+                    let child = Statement::new_section(id.as_str(), statements, meta);
+                    children.insert(child.inject_id(), child);
                 }
                 _ => {
                     let value = self.statement()?;
-                    children.insert(value.inject_id().unwrap(), value);
+                    children.insert(value.inject_id(), value);
                 }
             }
         }
-        Value::new_module(children, None).context(error::ValueSnafu {
-            position: Position::default(),
-        })
+        Ok(Statement::new_module(".", children, parent_meta))
     }
 }
 
 #[cfg(test)]
 mod test {
+    use crate::lang::ast::Metadata;
     use crate::lang::parser::Parser;
     use crate::lang::Token;
-    use crate::{Value, ValueType};
+    use crate::{Statement, Value, ValueType};
     use indexmap::IndexMap;
     use logos::Logos;
 
@@ -692,16 +530,13 @@ mod test {
             Parser::new(Token::lexer($input))
         };
     }
-    #[test]
-    fn comment() {
-        let mut parser = parser!("# Line Comment\n");
-        assert_eq!(parser.comment().unwrap(), Some("Line Comment".to_string()));
-    }
 
     #[test]
-    fn label() {
-        let mut parser = parser!("!Hint");
-        assert_eq!(parser.label().unwrap(), Some("Hint".to_string()));
+    fn metadata() {
+        let mut parser = parser!("# Line Comment\n !Hint");
+        let meta = parser.metadata().unwrap();
+        assert_eq!(meta.comment, Some("Line Comment".to_string()));
+        assert_eq!(meta.label, Some("Hint".to_string()));
     }
 
     #[test]
@@ -710,95 +545,100 @@ mod test {
             (
                 "'hello world'",
                 (
-                    Value::new_string("hello world".to_string(), None, None).unwrap(),
+                    Value::new_string("hello world".to_string(), Metadata::default()),
                     ValueType::String,
                 ),
             ),
             (
                 "-3",
-                (Value::new_int(-3, None, None).unwrap(), ValueType::I64),
+                (Value::new_int(-3, Metadata::default()), ValueType::IGeneric),
             ),
             (
                 "-3i64",
-                (Value::new_i64(-3, None, None).unwrap(), ValueType::I64),
+                (Value::new_i64(-3, Metadata::default()), ValueType::I64),
             ),
             (
                 "-3i32",
-                (Value::new_i32(-3, None, None).unwrap(), ValueType::I32),
+                (Value::new_i32(-3, Metadata::default()), ValueType::I32),
             ),
             (
                 "-3i16",
-                (Value::new_i16(-3, None, None).unwrap(), ValueType::I16),
+                (Value::new_i16(-3, Metadata::default()), ValueType::I16),
             ),
             (
                 "-3i8",
-                (Value::new_i8(-3, None, None).unwrap(), ValueType::I8),
+                (Value::new_i8(-3, Metadata::default()), ValueType::I8),
             ),
             (
                 "3u64",
-                (Value::new_u64(3, None, None).unwrap(), ValueType::U64),
+                (Value::new_u64(3, Metadata::default()), ValueType::U64),
             ),
             (
                 "3u32",
-                (Value::new_u32(3, None, None).unwrap(), ValueType::U32),
+                (Value::new_u32(3, Metadata::default()), ValueType::U32),
             ),
             (
                 "3u16",
-                (Value::new_u16(3, None, None).unwrap(), ValueType::U16),
+                (Value::new_u16(3, Metadata::default()), ValueType::U16),
             ),
             (
                 "3u8",
-                (Value::new_u8(3, None, None).unwrap(), ValueType::U8),
+                (Value::new_u8(3, Metadata::default()), ValueType::U8),
             ),
             (
                 "-3.14",
-                (Value::new_float(-3.14, None, None).unwrap(), ValueType::F64),
+                (
+                    Value::new_float(-3.14, Metadata::default()),
+                    ValueType::FGeneric,
+                ),
             ),
             (
                 "-3.14f64",
-                (Value::new_f64(-3.14, None, None).unwrap(), ValueType::F64),
+                (Value::new_f64(-3.14, Metadata::default()), ValueType::F64),
             ),
             (
                 "-3.14f32",
-                (Value::new_f32(-3.14, None, None).unwrap(), ValueType::F32),
+                (Value::new_f32(-3.14, Metadata::default()), ValueType::F32),
             ),
             (
                 "false",
-                (Value::new_bool(false, None, None).unwrap(), ValueType::Bool),
+                (Value::new_bool(false, Metadata::default()), ValueType::Bool),
             ),
             (
                 "1.2.3",
                 (
-                    Value::new_version(semver::Version::new(1, 2, 3), None, None).unwrap(),
+                    Value::new_version(semver::Version::new(1, 2, 3), Metadata::default()),
                     ValueType::Version,
                 ),
             ),
             (
                 ">1.4",
                 (
-                    Value::new_require(semver::VersionReq::parse(">1.4").unwrap(), None, None)
-                        .unwrap(),
+                    Value::new_require(
+                        semver::VersionReq::parse(">1.4").unwrap(),
+                        Metadata::default(),
+                    ),
                     ValueType::Require,
                 ),
             ),
             (
                 "m'hello'",
                 (
-                    Value::new_macro("hello".to_string(), true, None, None).unwrap(),
+                    Value::new_macro("hello".to_string(), Metadata::default()),
                     ValueType::Macro,
                 ),
             ),
             (
                 "m!hello",
                 (
-                    Value::new_macro("hello".to_string(), false, None, None).unwrap(),
+                    Value::new_macro("hello".to_string(), Metadata::default()),
                     ValueType::Macro,
                 ),
             ),
             (
                 "b'aGVsbG8='",
                 (
-                    Value::new_bytes(b"hello".to_vec(), None, None).unwrap(),
+                    Value::new_bytes(b"hello".to_vec(), Metadata::default()),
                     ValueType::Bytes,
                 ),
             ),
@@ -807,15 +647,17 @@ mod test {
                 (
                     (Value::new_array(
                         vec![
-                            Value::new_string("hello".to_string(), None, None).unwrap(),
-                            Value::new_int(3, None, None).unwrap(),
-                            Value::new_bool(true, None, None).unwrap(),
+                            Value::new_string("hello".to_string(), Metadata::default()),
+                            Value::new_int(3, Metadata::default()),
+                            Value::new_bool(true, Metadata::default()),
                         ],
-                        None,
-                        None,
-                    )
-                    .unwrap()),
-                    ValueType::Array(vec![ValueType::String, ValueType::I64, ValueType::Bool]),
+                        Metadata::default(),
+                    )),
+                    ValueType::Array(vec![
+                        ValueType::String,
+                        ValueType::IGeneric,
+                        ValueType::Bool,
+                    ]),
                 ),
             ),
             (
@@ -825,21 +667,19 @@ mod test {
                         IndexMap::from([
                             (
                                 "one".to_string(),
-                                Value::new_string("hello".to_string(), None, None).unwrap(),
+                                Value::new_string("hello".to_string(), Metadata::default()),
                             ),
-                            ("two".to_string(), Value::new_int(3, None, None).unwrap()),
+                            ("two".to_string(), Value::new_int(3, Metadata::default())),
                             (
                                 "three".to_string(),
-                                Value::new_bool(true, None, None).unwrap(),
+                                Value::new_bool(true, Metadata::default()),
                             ),
                         ]),
-                        None,
-                        None,
-                    )
-                    .unwrap(),
+                        Metadata::default(),
+                    ),
                     ValueType::Table(IndexMap::from([
                         ("one".to_string(), ValueType::String),
-                        ("two".to_string(), ValueType::I64),
+                        ("two".to_string(), ValueType::IGeneric),
                         ("three".to_string(), ValueType::Bool),
                     ])),
                 ),
@@ -854,7 +694,7 @@ mod test {
     fn types() {
         for (case, expected) in [
             ("string", ValueType::String),
-            ("int", ValueType::I64),
+            ("int", ValueType::IGeneric),
             ("i8", ValueType::I8),
             ("i16", ValueType::I16),
             ("i32", ValueType::I32),
@@ -872,29 +712,17 @@ mod test {
             ("bytes", ValueType::Bytes),
             (
                 "array[string, int, bool]",
-                ValueType::Array(vec![ValueType::String, ValueType::I64, ValueType::Bool]),
+                ValueType::Array(vec![
+                    ValueType::String,
+                    ValueType::IGeneric,
+                    ValueType::Bool,
+                ]),
             ),
             (
                 "table{one: string, two: int, three: bool}",
                 ValueType::Table(IndexMap::from([
                     ("one".to_string(), ValueType::String),
-                    ("two".to_string(), ValueType::I64),
-                    ("three".to_string(), ValueType::Bool),
-                ])),
-            ),
-            (
-                "block{one: string, two: int, three: bool}",
-                ValueType::Block(IndexMap::from([
-                    ("one".to_string(), ValueType::String),
-                    ("two".to_string(), ValueType::I64),
-                    ("three".to_string(), ValueType::Bool),
-                ])),
-            ),
-            (
-                "section{one: string, two: int, three: bool}",
-                ValueType::Section(IndexMap::from([
-                    ("one".to_string(), ValueType::String),
-                    ("two".to_string(), ValueType::I64),
+                    ("two".to_string(), ValueType::IGeneric),
                     ("three".to_string(), ValueType::Bool),
                 ])),
             ),
@@ -909,84 +737,108 @@ mod test {
         for (case, expected) in [
             (
                 "$foo = 3",
-                Value::new_control(
-                    "foo".to_string(),
-                    Value::new_int(3, None, None).unwrap(),
+                Statement::new_control(
+                    "foo",
                     None,
-                    None,
+                    Value::new_int(3, Metadata::default()),
+                    Metadata::default(),
                 )
                 .unwrap(),
             ),
             (
                 "$foo: f64 = 3.14",
-                Value::new_control(
-                    "foo".to_string(),
-                    Value::new_f64(3.14, None, None).unwrap(),
-                    None,
+                Statement::new_control(
+                    "foo",
                     Some(ValueType::F64),
+                    Value::new_f64(3.14, Metadata::default()),
+                    Metadata::default(),
                 )
                 .unwrap(),
             ),
             (
                 "# Comment\n$foo: f64 = !Hint 3.14",
-                Value::new_control(
-                    "foo".to_string(),
-                    Value::new_f64(3.14, Some("Hint".to_string()), None).unwrap(),
-                    Some("Comment".to_string()),
+                Statement::new_control(
+                    "foo",
                     Some(ValueType::F64),
+                    Value::new_f64(
+                        3.14,
+                        Metadata {
+                            comment: None,
+                            label: Some("Hint".to_string()),
+                        },
+                    ),
+                    Metadata {
+                        comment: Some("Comment".to_string()),
+                        label: None,
+                    },
                 )
                 .unwrap(),
             ),
             (
                 "foo = 3",
-                Value::new_assignment(
-                    "foo".to_string(),
-                    Value::new_int(3, None, None).unwrap(),
+                Statement::new_assign(
+                    "foo",
                     None,
-                    None,
+                    Value::new_int(3, Metadata::default()),
+                    Metadata::default(),
                 )
                 .unwrap(),
             ),
             (
                 "'foo': f64 = 3.14",
-                Value::new_assignment(
-                    "foo".to_string(),
-                    Value::new_f64(3.14, None, None).unwrap(),
-                    None,
+                Statement::new_assign(
+                    "foo",
                     Some(ValueType::F64),
+                    Value::new_f64(3.14, Metadata::default()),
+                    Metadata::default(),
                 )
                 .unwrap(),
             ),
             (
                 "# Comment\n\"foo\": f64 = !Hint 3.14",
-                Value::new_assignment(
-                    "foo".to_string(),
-                    Value::new_f64(3.14, Some("Hint".to_string()), None).unwrap(),
-                    Some("Comment".to_string()),
+                Statement::new_assign(
+                    "foo",
                     Some(ValueType::F64),
+                    Value::new_f64(
+                        3.14,
+                        Metadata {
+                            comment: None,
+                            label: Some("Hint".to_string()),
+                        },
+                    ),
+                    Metadata {
+                        comment: Some("Comment".to_string()),
+                        label: None,
+                    },
                 )
                 .unwrap(),
             ),
             (
-                "# Comment\ntest foo 'bar' {\n one = 3\n }\n",
-                Value::new_block(
-                    "test".to_string(),
-                    vec!["foo".to_string(), "bar".to_string()],
+                "# Comment\ntest 'foo' 'bar' {\n one = 3\n }\n",
+                Statement::new_block(
+                    "test",
+                    vec![
+                        Value::new_string("foo".to_string(), Metadata::default()),
+                        Value::new_string("bar".to_string(), Metadata::default()),
+                    ],
                     IndexMap::from([(
                         "one".to_string(),
-                        Value::new_assignment(
-                            "one".to_string(),
-                            Value::new_int(3, None, None).unwrap(),
+                        Statement::new_assign(
+                            "one",
                             None,
-                            None,
+                            Value::new_int(3, Metadata::default()),
+                            Metadata::default(),
                         )
                         .unwrap(),
                     )]),
-                    Some("Comment".to_string()),
-                )
-                .unwrap(),
+                    Metadata {
+                        comment: Some("Comment".to_string()),
+                        label: None,
+                    },
+                ),
             ),
         ] {
+            println!("testing: {case}");
             let mut parser = parser!(case);
             assert_eq!(parser.statement().unwrap(), expected);
         }

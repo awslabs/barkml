@@ -1,11 +1,12 @@
-["section-b"]
+["section-2"]
 # Documentation
 number = 4
-floating  = 3.14
+floating: f32 = 3.14f32
+versioning = 1.2.3-beta.6
+requires = ^1.3.3
 strings = "foobar"
 arrays  = ["hello", 5, 3.14, 'single']
 object = { foo = b'YmluYXJ5c3RyaW5n', "bar" = 4 }
-blocks "block-a" "label-a" {
-    simple = m'{section-a.strings} bar'
-    replacement = m!section-a.floating
+blocks 0.3 "label-a" {
+    simple = "me"
 }

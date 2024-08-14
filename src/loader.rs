@@ -1,3 +1,4 @@
+use indexmap::IndexMap;
 use snafu::{ensure, OptionExt, ResultExt};
 use std::fs::{read_dir, File};
 use std::io::{Cursor, Read, Seek};
@@ -5,8 +6,8 @@ use std::path::Path;
 
 use crate::error::{self, Result};
 use crate::lang::from_str;
-use crate::r#macro::Scope;
-use crate::{Data, Value};
+use crate::lang::scope::Scope;
+use crate::{Metadata, Statement, StatementData};
 
 /// LoaderInterface defines the shared interface for loaders
 pub trait Loader {
@@ -15,18 +16,18 @@ pub trait Loader {
     fn skip_macro_resolution(&mut self) -> Result<&mut Self>;
     fn mode(&mut self, mode: LoaderMode) -> Result<&mut Self>;
     fn allow_collisions(&mut self) -> Result<&mut Self>;
-    fn read(&self) -> Result<Value>;
+    fn read(&self) -> Result<Statement>;
 
-    fn macro_resolution(&self, module: &Value) -> Result<Value> {
+    fn macro_resolution(&self, module: &Statement) -> Result<Statement> {
         if self.is_resolution_enabled() {
-            let mut scope = Scope::new(module)?;
+            let mut scope = Scope::new(module);
             scope.apply()
         } else {
             Ok(module.clone())
         }
     }
 
-    fn load(&self) -> Result<Value> {
+    fn load(&self) -> Result<Statement> {
         let module = self.read()?;
         self.macro_resolution(&module)
     }
@@ -46,14 +47,14 @@ pub enum LoaderMode {
 
 pub enum Modules {
     Empty,
-    Single(Value),
-    Merged(Value),
+    Single(Statement),
+    Merged(Statement),
 }
 
 impl Modules {
-    pub fn get(&self) -> Value {
+    pub fn get(&self) -> Statement {
         match self {
-            Self::Empty => Value::new_null(None, None).unwrap(),
+            Self::Empty => Statement::new_module(".", IndexMap::new(), Metadata::default()),
             Self::Single(value) => value.clone(),
             Self::Merged(value) => value.clone(),
         }
@@ -63,7 +64,7 @@ impl Modules {
         matches!(self, Self::Empty)
     }
 
-    pub fn add(&mut self, module: &Value, is_collision_allowed: bool) -> Result<()> {
+    pub fn add(&mut self, module: &Statement, is_collision_allowed: bool) -> Result<()> {
         match self {
             Self::Empty => Ok(()),
             Self::Single(_) => Ok(()),
@@ -76,113 +77,43 @@ impl Modules {
         }
     }
 
-    fn merge_into(left: &mut Value, right: &Value, is_collision_allowed: bool) -> Result<()> {
-        match right.inner() {
-            Data::Module(right_stmts) => {
-                if let Some(left_stmts) = left.as_module_mut() {
-                    for (key, value) in right_stmts {
-                        if let Some(target) = left_stmts.get_mut(key) {
-                            Self::merge_into(target, value, is_collision_allowed)?;
-                        } else {
-                            left_stmts.insert(key.clone(), value.clone());
+    fn merge_into(
+        left: &mut Statement,
+        right: &Statement,
+        is_collision_allowed: bool,
+    ) -> Result<()> {
+        match &right.data {
+            StatementData::Group(right_stmts) | StatementData::Labeled(_, right_stmts) => {
+                match &mut left.data {
+                    StatementData::Group(ref mut left_stmts)
+                    | StatementData::Labeled(_, ref mut left_stmts) => {
+                        for (key, value) in right_stmts {
+                            if let Some(target) = left_stmts.get_mut(key) {
+                                Self::merge_into(target, value, is_collision_allowed)?;
+                            } else {
+                                left_stmts.insert(key.clone(), value.clone());
+                            }
                         }
                     }
-                } else {
-                    ensure!(
-                        is_collision_allowed,
-                        error::LoaderMergeCollisionSnafu {
-                            id: left.id().unwrap()
-                        }
-                    );
-                    *left = right.clone();
-                }
-            }
-            Data::Section(right_stmts) => {
-                if let Some(left_stmts) = left.as_section_mut() {
-                    for (key, value) in right_stmts {
-                        if let Some(target) = left_stmts.get_mut(key) {
-                            Self::merge_into(target, value, is_collision_allowed)?;
-                        } else {
-                            left_stmts.insert(key.clone(), value.clone());
-                        }
+                    _ => {
+                        ensure!(
+                            is_collision_allowed,
+                            error::LoaderMergeCollisionSnafu {
+                                id: left.id.clone()
+                            }
+                        );
+                        *left = right.clone();
                     }
-                } else {
-                    ensure!(
-                        is_collision_allowed,
-                        error::LoaderMergeCollisionSnafu {
-                            id: left.id().unwrap()
-                        }
-                    );
-                    *left = right.clone();
                 }
             }
-            Data::Block { children, .. } => {
-                let right_stmts = children;
-                if let Some((_, left_stmts)) = left.as_block_mut() {
-                    for (key, value) in right_stmts {
-                        if let Some(target) = left_stmts.get_mut(key) {
-                            Self::merge_into(target, value, is_collision_allowed)?;
-                        } else {
-                            left_stmts.insert(key.clone(), value.clone());
-                        }
+            StatementData::Single(_) => {
+                ensure!(
+                    is_collision_allowed,
+                    error::LoaderMergeCollisionSnafu {
+                        id: left.id.clone()
                     }
-                } else {
-                    ensure!(
-                        is_collision_allowed,
-                        error::LoaderMergeCollisionSnafu {
-                            id: left.id().unwrap()
-                        }
-                    );
-                    *left = right.clone();
-                }
-            }
-            Data::Assignment(value) => {
-                if let Some(left_value) = left.as_assignment_mut() {
-                    Self::merge_into(left_value, value, is_collision_allowed)?;
-                } else {
-                    ensure!(
-                        is_collision_allowed,
-                        error::LoaderMergeCollisionSnafu {
-                            id: left.id().unwrap()
-                        }
-                    );
-                    *left = right.clone();
-                }
-            }
-            Data::Control(value) => {
-                if let Some(left_value) = left.as_control_mut() {
-                    Self::merge_into(left_value, value, is_collision_allowed)?;
-                } else {
-                    ensure!(
-                        is_collision_allowed,
-                        error::LoaderMergeCollisionSnafu {
-                            id: left.id().unwrap()
-                        }
-                    );
-                    *left = right.clone();
-                }
-            }
-            Data::Table(right_map) => {
-                if let Some(left_map) = left.as_table_mut() {
-                    for (key, value) in right_map {
-                        if let Some(target) = left_map.get_mut(key) {
-                            Self::merge_into(target, value, is_collision_allowed)?;
-                        } else {
-                            left_map.insert(key.clone(), value.clone());
-                        }
-                    }
-                } else {
-                    ensure!(
-                        is_collision_allowed,
-                        error::LoaderMergeCollisionSnafu {
-                            id: "table definition"
-                        }
-                    );
-                    *left = right.clone();
-                }
-            }
-            _ => {
-                // We ignore any none statement
+                );
+                *left = right.clone();
             }
         }
         Ok(())
@@ -340,7 +271,7 @@ impl Loader for StandardLoader {
 
     /// Load all the configuration files and return everything as
     /// a single module
-    fn read(&self) -> Result<Value> {
+    fn read(&self) -> Result<Statement> {
         match self.module {
             Modules::Empty => error::CustomSnafu {
                 message: "no barkml code was read by this loader",
@@ -368,226 +299,166 @@ fn basename<P: AsRef<Path>>(path: P) -> Result<String> {
 #[cfg(test)]
 mod test {
     use indexmap::IndexMap;
-
-    use assert_matches::assert_matches;
+    use semver::Version;
 
     use crate::loader::{LoaderMode, StandardLoader};
-    use crate::{Loader, Value};
+    use crate::{Loader, Metadata, Statement, Value};
 
     #[test]
     pub fn load_single() {
-        let _expected = Value::new_module(
+        let expected = Statement::new_module(
+            ".",
             IndexMap::from([
                 (
-                    "schema".into(),
-                    Value::new_control(
-                        "schema".into(),
-                        Value::new_string("1.0.0".into(), Some("Test".to_string()), None).unwrap(),
+                    "tire".into(),
+                    Statement::new_control(
+                        "tire",
                         None,
-                        None,
+                        Value::new_version(
+                            Version::new(1, 0, 0),
+                            Metadata {
+                                comment: None,
+                                label: Some("Test".into()),
+                            },
+                        ),
+                        Metadata::default(),
                     )
                     .unwrap(),
                 ),
                 (
-                    "section-a".into(),
-                    Value::new_section(
-                        "section-a".into(),
+                    "section-1".into(),
+                    Statement::new_section(
+                        "section-1",
                         IndexMap::from([
                             (
                                 "number".into(),
-                                Value::new_assignment(
-                                    "number".into(),
-                                    Value::new_int(4, None, None).unwrap(),
-                                    Some("Documentation".to_string()),
+                                Statement::new_assign(
+                                    "number",
                                     None,
+                                    Value::new_int(4, Metadata::default()),
+                                    Metadata {
+                                        comment: Some("Documentation".into()),
+                                        label: None,
+                                    },
                                 )
                                 .unwrap(),
                             ),
                             (
-                                "float".into(),
-                                Value::new_assignment(
-                                    "float".into(),
-                                    Value::new_float(3.14, None, None).unwrap(),
-                                    None,
-                                    None,
+                                "floating".into(),
+                                Statement::new_assign(
+                                    "floating",
+                                    Some(crate::ValueType::F32),
+                                    Value::new_f32(3.14, Metadata::default()),
+                                    Metadata::default(),
                                 )
                                 .unwrap(),
                             ),
                             (
-                                "string".into(),
-                                Value::new_assignment(
-                                    "string".into(),
-                                    Value::new_string("foobar".into(), None, None).unwrap(),
+                                "versioning".into(),
+                                Statement::new_assign(
+                                    "versioning",
                                     None,
-                                    None,
+                                    Value::new_version(
+                                        Version::parse("1.2.3-beta.6").unwrap(),
+                                        Metadata::default(),
+                                    ),
+                                    Metadata::default(),
                                 )
                                 .unwrap(),
                             ),
                             (
-                                "array".to_string(),
-                                Value::new_assignment(
-                                    "array".into(),
+                                "requires".into(),
+                                Statement::new_assign(
+                                    "requires",
+                                    None,
+                                    Value::new_require(
+                                        semver::VersionReq::parse("^1.3.3").unwrap(),
+                                        Metadata::default(),
+                                    ),
+                                    Metadata::default(),
+                                )
+                                .unwrap(),
+                            ),
+                            (
+                                "strings".into(),
+                                Statement::new_assign(
+                                    "strings",
+                                    None,
+                                    Value::new_string("foobar".into(), Metadata::default()),
+                                    Metadata::default(),
+                                )
+                                .unwrap(),
+                            ),
+                            (
+                                "arrays".to_string(),
+                                Statement::new_assign(
+                                    "arrays",
+                                    None,
                                     Value::new_array(
                                         vec![
-                                            Value::new_string("hello".into(), None, None).unwrap(),
-                                            Value::new_int(5, None, None).unwrap(),
-                                            Value::new_float(3.14, None, None).unwrap(),
-                                            Value::new_string("single".into(), None, None).unwrap(),
+                                            Value::new_string("hello".into(), Metadata::default()),
+                                            Value::new_int(5, Metadata::default()),
+                                            Value::new_float(3.14, Metadata::default()),
+                                            Value::new_string("single".into(), Metadata::default()),
                                         ],
-                                        None,
-                                        None,
-                                    )
-                                    .unwrap(),
-                                    None,
-                                    None,
+                                        Metadata::default(),
+                                    ),
+                                    Metadata::default(),
                                 )
                                 .unwrap(),
                             ),
                             (
                                 "object".into(),
-                                Value::new_assignment(
-                                    "object".into(),
+                                Statement::new_assign(
+                                    "object",
+                                    None,
                                     Value::new_table(
                                         IndexMap::from([
                                             (
                                                 "foo".into(),
                                                 Value::new_bytes(
                                                     b"binarystring".to_vec(),
-                                                    None,
-                                                    None,
-                                                )
-                                                .unwrap(),
+                                                    Metadata::default(),
+                                                ),
                                             ),
-                                            ("bar".into(), Value::new_int(4, None, None).unwrap()),
+                                            ("bar".into(), Value::new_int(4, Metadata::default())),
                                         ]),
-                                        None,
-                                        None,
-                                    )
-                                    .unwrap(),
-                                    None,
-                                    None,
+                                        Metadata::default(),
+                                    ),
+                                    Metadata::default(),
                                 )
                                 .unwrap(),
                             ),
                             (
-                                "block".into(),
-                                Value::new_block(
-                                    "block".into(),
-                                    vec!["block-a".to_string(), "label-a".to_string()],
+                                "blocks.0.3.'label-a'".into(),
+                                Statement::new_block(
+                                    "blocks",
+                                    vec![
+                                        Value::new_float(0.3, Metadata::default()),
+                                        Value::new_string(
+                                            "label-a".to_string(),
+                                            Metadata::default(),
+                                        ),
+                                    ],
                                     IndexMap::from([(
                                         "simple".into(),
-                                        Value::new_string("me".into(), None, None).unwrap(),
+                                        Statement::new_assign(
+                                            "simple",
+                                            None,
+                                            Value::new_string("me".into(), Metadata::default()),
+                                            Metadata::default(),
+                                        )
+                                        .unwrap(),
                                     )]),
-                                    None,
-                                )
-                                .unwrap(),
+                                    Metadata::default(),
+                                ),
                             ),
                         ]),
-                        Some("Documentation".to_string()),
-                    )
-                    .unwrap(),
-                ),
-                (
-                    "section-b".into(),
-                    Value::new_section(
-                        "section-b".into(),
-                        IndexMap::from([
-                            (
-                                "number".into(),
-                                Value::new_assignment(
-                                    "number".into(),
-                                    Value::new_int(4, None, None).unwrap(),
-                                    Some("Documentation".to_string()),
-                                    None,
-                                )
-                                .unwrap(),
-                            ),
-                            (
-                                "float".into(),
-                                Value::new_assignment(
-                                    "float".into(),
-                                    Value::new_float(3.14, None, None).unwrap(),
-                                    None,
-                                    None,
-                                )
-                                .unwrap(),
-                            ),
-                            (
-                                "string".into(),
-                                Value::new_assignment(
-                                    "string".into(),
-                                    Value::new_string("foobar".into(), None, None).unwrap(),
-                                    None,
-                                    None,
-                                )
-                                .unwrap(),
-                            ),
-                            (
-                                "array".to_string(),
-                                Value::new_assignment(
-                                    "array".into(),
-                                    Value::new_array(
-                                        vec![
-                                            Value::new_string("hello".into(), None, None).unwrap(),
-                                            Value::new_int(5, None, None).unwrap(),
-                                            Value::new_float(3.14, None, None).unwrap(),
-                                            Value::new_string("single".into(), None, None).unwrap(),
-                                        ],
-                                        None,
-                                        None,
-                                    )
-                                    .unwrap(),
-                                    None,
-                                    None,
-                                )
-                                .unwrap(),
-                            ),
-                            (
-                                "object".into(),
-                                Value::new_assignment(
-                                    "object".into(),
-                                    Value::new_table(
-                                        IndexMap::from([
-                                            (
-                                                "foo".into(),
-                                                Value::new_bytes(
-                                                    b"binarystring".to_vec(),
-                                                    None,
-                                                    None,
-                                                )
-                                                .unwrap(),
-                                            ),
-                                            ("bar".into(), Value::new_int(4, None, None).unwrap()),
-                                        ]),
-                                        None,
-                                        None,
-                                    )
-                                    .unwrap(),
-                                    None,
-                                    None,
-                                )
-                                .unwrap(),
-                            ),
-                            (
-                                "block".into(),
-                                Value::new_block(
-                                    "block".into(),
-                                    vec!["block-a".to_string(), "label-a".to_string()],
-                                    IndexMap::from([(
-                                        "simple".into(),
-                                        Value::new_string("me".into(), None, None).unwrap(),
-                                    )]),
-                                    None,
-                                )
-                                .unwrap(),
-                            ),
-                        ]),
-                        Some("Documentation".to_string()),
-                    )
-                    .unwrap(),
+                        Metadata::default(),
+                    ),
                 ),
             ]),
-            None,
+            Metadata::default(),
         );
         let result = StandardLoader::default()
             .mode(LoaderMode::Single)
@@ -596,224 +467,296 @@ mod test {
             .expect("path detection failed")
             .load()
             .expect("load failed");
-        let children = result.as_module().expect("was not a module");
-        assert_matches!(children, _expected);
+        assert_eq!(result.data, expected.data);
     }
 
     #[test]
     pub fn load_multiple() {
-        let _expected = Value::new_module(
+        let _expected = Statement::new_module(
+            ".",
             IndexMap::from([
                 (
-                    "schema".into(),
-                    Value::new_control(
-                        "schema".into(),
-                        Value::new_string("1.0.0".into(), Some("Test".to_string()), None).unwrap(),
+                    "tire".into(),
+                    Statement::new_control(
+                        "tire",
                         None,
-                        None,
+                        Value::new_version(
+                            Version::new(1, 0, 0),
+                            Metadata {
+                                comment: None,
+                                label: Some("Test".into()),
+                            },
+                        ),
+                        Metadata::default(),
                     )
                     .unwrap(),
                 ),
                 (
-                    "section-a".into(),
-                    Value::new_section(
-                        "section-a".into(),
+                    "section-1".into(),
+                    Statement::new_section(
+                        "section-1",
                         IndexMap::from([
                             (
                                 "number".into(),
-                                Value::new_assignment(
-                                    "number".into(),
-                                    Value::new_int(4, None, None).unwrap(),
-                                    Some("Documentation".to_string()),
+                                Statement::new_assign(
+                                    "number",
                                     None,
+                                    Value::new_int(4, Metadata::default()),
+                                    Metadata {
+                                        comment: Some("Documentation".into()),
+                                        label: None,
+                                    },
                                 )
                                 .unwrap(),
                             ),
                             (
-                                "float".into(),
-                                Value::new_assignment(
-                                    "float".into(),
-                                    Value::new_float(3.14, None, None).unwrap(),
-                                    None,
-                                    None,
+                                "floating".into(),
+                                Statement::new_assign(
+                                    "floating",
+                                    Some(crate::ValueType::F32),
+                                    Value::new_f32(3.14, Metadata::default()),
+                                    Metadata::default(),
                                 )
                                 .unwrap(),
                             ),
                             (
-                                "string".into(),
-                                Value::new_assignment(
-                                    "string".into(),
-                                    Value::new_string("foobar".into(), None, None).unwrap(),
+                                "versioning".into(),
+                                Statement::new_assign(
+                                    "versioning",
                                     None,
-                                    None,
+                                    Value::new_version(
+                                        Version::parse("1.2.3-beta.6").unwrap(),
+                                        Metadata::default(),
+                                    ),
+                                    Metadata::default(),
                                 )
                                 .unwrap(),
                             ),
                             (
-                                "array".to_string(),
-                                Value::new_assignment(
-                                    "array".into(),
+                                "requires".into(),
+                                Statement::new_assign(
+                                    "requires",
+                                    None,
+                                    Value::new_require(
+                                        semver::VersionReq::parse("^1.3.3").unwrap(),
+                                        Metadata::default(),
+                                    ),
+                                    Metadata::default(),
+                                )
+                                .unwrap(),
+                            ),
+                            (
+                                "strings".into(),
+                                Statement::new_assign(
+                                    "strings",
+                                    None,
+                                    Value::new_string("foobar".into(), Metadata::default()),
+                                    Metadata::default(),
+                                )
+                                .unwrap(),
+                            ),
+                            (
+                                "arrays".to_string(),
+                                Statement::new_assign(
+                                    "arrays",
+                                    None,
                                     Value::new_array(
                                         vec![
-                                            Value::new_string("hello".into(), None, None).unwrap(),
-                                            Value::new_int(5, None, None).unwrap(),
-                                            Value::new_float(3.14, None, None).unwrap(),
-                                            Value::new_string("single".into(), None, None).unwrap(),
+                                            Value::new_string("hello".into(), Metadata::default()),
+                                            Value::new_int(5, Metadata::default()),
+                                            Value::new_float(3.14, Metadata::default()),
+                                            Value::new_string("single".into(), Metadata::default()),
                                         ],
-                                        None,
-                                        None,
-                                    )
-                                    .unwrap(),
-                                    None,
-                                    None,
+                                        Metadata::default(),
+                                    ),
+                                    Metadata::default(),
                                 )
                                 .unwrap(),
                             ),
                             (
                                 "object".into(),
-                                Value::new_assignment(
-                                    "object".into(),
+                                Statement::new_assign(
+                                    "object",
+                                    None,
                                     Value::new_table(
                                         IndexMap::from([
                                             (
                                                 "foo".into(),
                                                 Value::new_bytes(
                                                     b"binarystring".to_vec(),
-                                                    None,
-                                                    None,
-                                                )
-                                                .unwrap(),
+                                                    Metadata::default(),
+                                                ),
                                             ),
-                                            ("bar".into(), Value::new_int(4, None, None).unwrap()),
+                                            ("bar".into(), Value::new_int(4, Metadata::default())),
                                         ]),
-                                        None,
-                                        None,
-                                    )
-                                    .unwrap(),
-                                    None,
-                                    None,
+                                        Metadata::default(),
+                                    ),
+                                    Metadata::default(),
                                 )
                                 .unwrap(),
                             ),
                             (
-                                "block".into(),
-                                Value::new_block(
-                                    "block".into(),
-                                    vec!["block-a".to_string(), "label-a".to_string()],
+                                "blocks.0.3.'label-a'".into(),
+                                Statement::new_block(
+                                    "blocks",
+                                    vec![
+                                        Value::new_float(0.3, Metadata::default()),
+                                        Value::new_string(
+                                            "label-a".to_string(),
+                                            Metadata::default(),
+                                        ),
+                                    ],
                                     IndexMap::from([(
                                         "simple".into(),
-                                        Value::new_string("me".into(), None, None).unwrap(),
+                                        Statement::new_assign(
+                                            "simple",
+                                            None,
+                                            Value::new_string("me".into(), Metadata::default()),
+                                            Metadata::default(),
+                                        )
+                                        .unwrap(),
                                     )]),
-                                    None,
-                                )
-                                .unwrap(),
+                                    Metadata::default(),
+                                ),
                             ),
                         ]),
-                        Some("Documentation".to_string()),
-                    )
-                    .unwrap(),
+                        Metadata::default(),
+                    ),
                 ),
                 (
-                    "section-b".into(),
-                    Value::new_section(
-                        "section-b".into(),
+                    "section-2".into(),
+                    Statement::new_section(
+                        "section-2",
                         IndexMap::from([
                             (
                                 "number".into(),
-                                Value::new_assignment(
-                                    "number".into(),
-                                    Value::new_int(4, None, None).unwrap(),
-                                    Some("Documentation".to_string()),
+                                Statement::new_assign(
+                                    "number",
                                     None,
+                                    Value::new_int(4, Metadata::default()),
+                                    Metadata {
+                                        comment: Some("Documentation".into()),
+                                        label: None,
+                                    },
                                 )
                                 .unwrap(),
                             ),
                             (
-                                "float".into(),
-                                Value::new_assignment(
-                                    "float".into(),
-                                    Value::new_float(3.14, None, None).unwrap(),
-                                    None,
-                                    None,
+                                "floating".into(),
+                                Statement::new_assign(
+                                    "floating",
+                                    Some(crate::ValueType::F32),
+                                    Value::new_f32(3.14, Metadata::default()),
+                                    Metadata::default(),
                                 )
                                 .unwrap(),
                             ),
                             (
-                                "string".into(),
-                                Value::new_assignment(
-                                    "string".into(),
-                                    Value::new_string("foobar".into(), None, None).unwrap(),
+                                "versioning".into(),
+                                Statement::new_assign(
+                                    "versioning",
                                     None,
-                                    None,
+                                    Value::new_version(
+                                        Version::parse("1.2.3-beta.6").unwrap(),
+                                        Metadata::default(),
+                                    ),
+                                    Metadata::default(),
                                 )
                                 .unwrap(),
                             ),
                             (
-                                "array".to_string(),
-                                Value::new_assignment(
-                                    "array".into(),
+                                "requires".into(),
+                                Statement::new_assign(
+                                    "requires",
+                                    None,
+                                    Value::new_require(
+                                        semver::VersionReq::parse("^1.3.3").unwrap(),
+                                        Metadata::default(),
+                                    ),
+                                    Metadata::default(),
+                                )
+                                .unwrap(),
+                            ),
+                            (
+                                "strings".into(),
+                                Statement::new_assign(
+                                    "strings",
+                                    None,
+                                    Value::new_string("foobar".into(), Metadata::default()),
+                                    Metadata::default(),
+                                )
+                                .unwrap(),
+                            ),
+                            (
+                                "arrays".to_string(),
+                                Statement::new_assign(
+                                    "arrays",
+                                    None,
                                     Value::new_array(
                                         vec![
-                                            Value::new_string("hello".into(), None, None).unwrap(),
-                                            Value::new_int(5, None, None).unwrap(),
-                                            Value::new_float(3.14, None, None).unwrap(),
-                                            Value::new_string("single".into(), None, None).unwrap(),
+                                            Value::new_string("hello".into(), Metadata::default()),
+                                            Value::new_int(5, Metadata::default()),
+                                            Value::new_float(3.14, Metadata::default()),
+                                            Value::new_string("single".into(), Metadata::default()),
                                         ],
-                                        None,
-                                        None,
-                                    )
-                                    .unwrap(),
-                                    None,
-                                    None,
+                                        Metadata::default(),
+                                    ),
+                                    Metadata::default(),
                                 )
                                 .unwrap(),
                             ),
                             (
                                 "object".into(),
-                                Value::new_assignment(
-                                    "object".into(),
+                                Statement::new_assign(
+                                    "object",
+                                    None,
                                     Value::new_table(
                                         IndexMap::from([
                                             (
                                                 "foo".into(),
                                                 Value::new_bytes(
                                                     b"binarystring".to_vec(),
-                                                    None,
-                                                    None,
-                                                )
-                                                .unwrap(),
+                                                    Metadata::default(),
+                                                ),
                                             ),
-                                            ("bar".into(), Value::new_int(4, None, None).unwrap()),
+                                            ("bar".into(), Value::new_int(4, Metadata::default())),
                                         ]),
-                                        None,
-                                        None,
-                                    )
-                                    .unwrap(),
-                                    None,
-                                    None,
+                                        Metadata::default(),
+                                    ),
+                                    Metadata::default(),
                                 )
                                 .unwrap(),
                             ),
                             (
-                                "block".into(),
-                                Value::new_block(
-                                    "block".into(),
-                                    vec!["block-a".to_string(), "label-a".to_string()],
+                                "blocks.0.3.'label-a'".into(),
+                                Statement::new_block(
+                                    "blocks",
+                                    vec![
+                                        Value::new_float(0.3, Metadata::default()),
+                                        Value::new_string(
+                                            "label-a".to_string(),
+                                            Metadata::default(),
+                                        ),
+                                    ],
                                     IndexMap::from([(
                                         "simple".into(),
-                                        Value::new_string("me".into(), None, None).unwrap(),
+                                        Statement::new_assign(
+                                            "simple",
+                                            None,
+                                            Value::new_string("me".into(), Metadata::default()),
+                                            Metadata::default(),
+                                        )
+                                        .unwrap(),
                                     )]),
-                                    None,
-                                )
-                                .unwrap(),
+                                    Metadata::default(),
+                                ),
                             ),
                         ]),
-                        Some("Documentation".to_string()),
-                    )
-                    .unwrap(),
+                        Metadata::default(),
+                    ),
                 ),
             ]),
-            None,
+            Metadata::default(),
         );
         let result = StandardLoader::default()
             .mode(LoaderMode::Merge)
@@ -822,7 +765,6 @@ mod test {
             .expect("path detection failed")
             .load()
             .expect("load failed");
-        let children = result.as_module().expect("was not a module");
-        assert_matches!(children, _expected);
+        assert_eq!(result.data, _expected.data);
     }
 }

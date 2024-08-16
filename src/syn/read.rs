@@ -2,19 +2,22 @@ use std::iter::Peekable;
 
 use logos::Lexer;
 
-use super::error::Result;
-use super::{Position, Token};
+use crate::ast::Location;
+
+use super::lexer::Token;
+use super::Result;
 
 pub trait Read<'source> {
     fn peek(&mut self) -> Result<Option<Token>>;
     fn next(&mut self) -> Result<Option<Token>>;
     fn discard(&mut self);
-    fn position(&mut self) -> Position;
+    fn location(&mut self) -> Location;
 }
 
 pub struct TokenReader<'source> {
+    pub module_name: String,
     pub lexer: Peekable<Lexer<'source, Token>>,
-    pub position: Position,
+    pub location: Location,
 }
 
 impl<'source> Read<'source> for TokenReader<'source> {
@@ -31,7 +34,7 @@ impl<'source> Read<'source> for TokenReader<'source> {
     fn next(&mut self) -> Result<Option<Token>> {
         if let Some(token) = self.lexer.next() {
             let token = token?;
-            self.position = token.position();
+            self.location = token.location(Some(self.module_name.clone()));
             Ok(Some(token.clone()))
         } else {
             Ok(None)
@@ -42,7 +45,7 @@ impl<'source> Read<'source> for TokenReader<'source> {
         self.lexer.next();
     }
 
-    fn position(&mut self) -> Position {
-        self.position.clone()
+    fn location(&mut self) -> Location {
+        self.location.clone()
     }
 }

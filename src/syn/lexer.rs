@@ -1,10 +1,14 @@
+use super::error::FloatSnafu;
+use super::{error, Result};
 use base64::Engine;
 use logos::{Lexer, Logos, Skip};
 use snafu::ResultExt;
-use std::fmt::Formatter;
-use std::fmt::{self, Display};
+use std::fmt;
 use std::hash::{Hash, Hasher};
 
+use crate::ast::Location;
+
+/// Stores the integer with precision retained
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub enum Integer {
     Signed(i64),
@@ -21,40 +25,32 @@ pub enum Integer {
     U128(u128),
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
-pub struct Position {
-    line: usize,
-    column: usize,
-}
-
-impl Display for Position {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_fmt(format_args!("{}:{}", self.line, self.column))
-    }
-}
-
+/// Handles incrementing the line and column counters
 fn newline_callback(lex: &mut Lexer<Token>) -> Skip {
     lex.extras.line += 1;
     lex.extras.column = lex.span().end;
     Skip
 }
 
-fn base_callback(lex: &mut Lexer<Token>) -> Position {
-    Position {
+// Creates a source location
+fn base_callback(lex: &mut Lexer<Token>) -> Location {
+    Location {
+        module: None,
         line: lex.extras.line,
         column: lex.span().start - lex.extras.column,
     }
 }
 
+/// Represents the allowed tokens in a barkml file
 #[derive(Logos, Debug, PartialEq, Eq, Clone, Hash)]
 #[logos(error = super::error::Error)]
-#[logos(extras = Position)]
+#[logos(extras = Location)]
 #[logos(skip r"[ \t\f\r]+")] // Ignore this regex pattern between tokens
 pub enum Token {
     #[regex(r"\n", newline_callback)]
     Newline,
 
-    Error(Position),
+    Error(Location),
 
     #[token("true", base_callback)]
     #[token("True", base_callback)]
@@ -62,105 +58,106 @@ pub enum Token {
     #[token("Yes", base_callback)]
     #[token("On", base_callback)]
     #[token("on", base_callback)]
-    True(Position),
+    True(Location),
     #[token("false", base_callback)]
     #[token("False", base_callback)]
     #[token("no", base_callback)]
     #[token("No", base_callback)]
     #[token("Off", base_callback)]
     #[token("off", base_callback)]
-    False(Position),
+    False(Location),
 
     #[token("!", base_callback)]
-    Exclaim(Position),
+    Exclaim(Location),
     #[token("$", base_callback)]
-    Dollar(Position),
+    Dollar(Location),
+
     #[token("[", base_callback)]
-    LBracket(Position),
+    LBracket(Location),
     #[token("]", base_callback)]
-    RBracket(Position),
+    RBracket(Location),
     #[token("{", base_callback)]
-    LBrace(Position),
+    LBrace(Location),
     #[token("}", base_callback)]
-    RBrace(Position),
+    RBrace(Location),
     #[token("(", base_callback)]
-    LParen(Position),
+    LParen(Location),
     #[token(")", base_callback)]
-    RParen(Position),
+    RParen(Location),
     #[token("=", base_callback)]
-    Assign(Position),
+    Assign(Location),
     #[token(":", base_callback)]
-    Colon(Position),
+    Colon(Location),
     #[token("?", base_callback)]
-    Question(Position),
+    Question(Location),
     #[token(",", base_callback)]
-    Comma(Position),
+    Comma(Location),
 
     // Keywords
     #[token("null", base_callback, priority = 10)]
     #[token("nil", base_callback, priority = 10)]
     #[token("none", base_callback, priority = 10)]
-    KeyNull(Position),
+    KeyNull(Location),
     #[token("bool", base_callback, priority = 10)]
-    KeyBool(Position),
+    KeyBool(Location),
     #[token("string", base_callback, priority = 10)]
-    KeyString(Position),
+    KeyString(Location),
     #[token("int", base_callback, priority = 10)]
-    KeyInt(Position),
+    KeyInt(Location),
     #[token("uint", base_callback, priority = 10)]
-    KeyUInt(Position),
+    KeyUInt(Location),
     #[token("i8", base_callback, priority = 10)]
-    KeyInt8(Position),
+    KeyInt8(Location),
     #[token("u8", base_callback, priority = 10)]
-    KeyUInt8(Position),
+    KeyUInt8(Location),
     #[token("i16", base_callback, priority = 10)]
-    KeyInt16(Position),
+    KeyInt16(Location),
     #[token("u16", base_callback, priority = 10)]
-    KeyUInt16(Position),
+    KeyUInt16(Location),
     #[token("i32", base_callback, priority = 10)]
-    KeyInt32(Position),
+    KeyInt32(Location),
     #[token("u32", base_callback, priority = 10)]
-    KeyUInt32(Position),
+    KeyUInt32(Location),
     #[token("i64", base_callback, priority = 10)]
-    KeyInt64(Position),
+    KeyInt64(Location),
     #[token("u64", base_callback, priority = 10)]
-    KeyUInt64(Position),
+    KeyUInt64(Location),
     #[token("i128", base_callback, priority = 10)]
-    KeyInt128(Position),
+    KeyInt128(Location),
     #[token("u128", base_callback, priority = 10)]
-    KeyUInt128(Position),
+    KeyUInt128(Location),
     #[token("float", base_callback, priority = 10)]
-    KeyFloat(Position),
+    KeyFloat(Location),
     #[token("f64", base_callback, priority = 10)]
-    KeyFloat64(Position),
+    KeyFloat64(Location),
     #[token("f32", base_callback, priority = 10)]
-    KeyFloat32(Position),
+    KeyFloat32(Location),
     #[token("bytes", base_callback, priority = 10)]
-    KeyBytes(Position),
+    KeyBytes(Location),
     #[token("version", base_callback, priority = 10)]
-    KeyVersion(Position),
+    KeyVersion(Location),
     #[token("require", base_callback, priority = 10)]
-    KeyRequire(Position),
+    KeyRequire(Location),
     #[token("label", base_callback, priority = 10)]
-    KeyLabel(Position),
+    KeyLabel(Location),
     #[token("array", base_callback, priority = 10)]
-    KeyArray(Position),
+    KeyArray(Location),
     #[token("table", base_callback, priority = 10)]
-    KeyTable(Position),
+    KeyTable(Location),
     #[token("section", base_callback, priority = 10)]
-    KeySection(Position),
+    KeySection(Location),
     #[token("block", base_callback, priority = 10)]
-    KeyBlock(Position),
+    KeyBlock(Location),
 
     // Unused but reserved
     #[token("module", base_callback, priority = 10)]
-    KeyModule(Position),
+    KeyModule(Location),
     #[token("use", base_callback, priority = 10)]
-    KeyUse(Position),
+    KeyUse(Location),
     #[token("as", base_callback, priority = 10)]
-    KeyAs(Position),
+    KeyAs(Location),
     #[token("schema", base_callback, priority = 10)]
-    KeySchema(Position),
+    KeySchema(Location),
 
     // Integer
     #[regex(
@@ -179,120 +176,126 @@ pub enum Token {
         r"[+-]?0b[0-1][0-1_]*(i128|i64|i32|i16|i8|u128|u64|u32|u16|u8)?",
         binary::integer
     )]
-    Int((Position, Integer)),
+    Int((Location, Integer)),
 
     // Floating-point
     #[regex(
         r"[+-]?[0-9][0-9_]*\.[0-9][0-9_]*([eE][+-]?[0-9][0-9_]*)?(f64|f32)?",
         float
     )]
-    Float((Position, HashableFloat)),
+    Float((Location, HashableFloat)),
 
     #[regex(r"m'[^']*'", macro_string)]
-    MacroString((Position, String)),
+    MacroString((Location, String)),
     #[regex(r"b'[-A-Za-z0-9+/]*={0,3}'", byte_string)]
-    ByteString((Position, Vec<u8>)),
+    ByteString((Location, Vec<u8>)),
     #[regex(r"'[^']*'", quote_string)]
     #[regex(r#""[^"]*""#, quote_string)]
-    String((Position, String)),
+    String((Location, String)),
 
     #[regex(r"[a-zA-Z][a-zA-Z0-9_\-]*", |x| {
         (base_callback(x), x.slice().to_string()) }, priority = 5
     )]
-    Identifier((Position, String)),
+    Identifier((Location, String)),
     #[regex(r"m\![a-zA-Z][a-zA-Z0-9_\-\.]*", |x| {
         (base_callback(x), x.slice().trim_start_matches("m!").to_string()) }
     , priority = 6)]
-    MacroIdentifier((Position, String)),
+    MacroIdentifier((Location, String)),
     #[regex(r"\![a-zA-Z][a-zA-Z0-9_\-]*", |x| {
         (base_callback(x), x.slice().trim_start_matches('!').to_string())
     }, priority = 7)]
-    LabelIdentifier((Position, String)),
+    LabelIdentifier((Location, String)),
     #[regex(r"\$[a-zA-Z][a-zA-Z0-9_\-]*", |x| {
         (base_callback(x), x.slice().trim_start_matches('$').to_string()) }, priority = 8
     )]
-    ControlIdentifier((Position, String)),
+    ControlIdentifier((Location, String)),
 
     #[regex(r"([0-9]+\.){2}[0-9]+([-A-Za-z0-9\.]+)?", version_literal)]
-    Version((Position, semver::Version)),
+    Version((Location, semver::Version)),
 
     #[regex(
         r"(=|~|\^|>|<|<=|>=)[0-9]+(\.[0-9]+(\.[0-9]+(\-[a-z0-9]+(\+[a-z0-9]+)?)?)?)?",
         version_require
     )]
-    Require((Position, semver::VersionReq)),
+    Require((Location, semver::VersionReq)),
 
     #[regex(r"(#[ \t\f]*[^\n\r]+[\n\r])*", line_comment)]
-    LineComment((Position, String)),
+    LineComment((Location, String)),
     #[regex(r"\/\*[^\/\*]*\*\/", multiline_comment)]
-    MultiLineComment((Position, String)),
+    MultiLineComment((Location, String)),
 }
 
 impl Token {
-    pub fn position(&self) -> Position {
+    pub fn location(&self, module: Option<String>) -> Location {
         match self {
-            Self::Error(position)
-            | Self::True(position)
-            | Self::False(position)
-            | Self::Exclaim(position)
-            | Self::Dollar(position)
-            | Self::LBracket(position)
-            | Self::RBracket(position)
-            | Self::LBrace(position)
-            | Self::RBrace(position)
-            | Self::LParen(position)
-            | Self::RParen(position)
-            | Self::Assign(position)
-            | Self::Colon(position)
-            | Self::Question(position)
-            | Self::Comma(position)
-            | Self::KeyNull(position)
-            | Self::KeyBool(position)
-            | Self::KeyString(position)
-            | Self::KeyInt(position)
-            | Self::KeyInt8(position)
-            | Self::KeyInt16(position)
-            | Self::KeyInt32(position)
-            | Self::KeyInt64(position)
-            | Self::KeyUInt8(position)
-            | Self::KeyUInt16(position)
-            | Self::KeyUInt32(position)
-            | Self::KeyUInt64(position)
-            | Self::KeyFloat(position)
-            | Self::KeyFloat32(position)
-            | Self::KeyFloat64(position)
-            | Self::KeyBytes(position)
-            | Self::KeyVersion(position)
-            | Self::KeyRequire(position)
-            | Self::KeyLabel(position)
-            | Self::KeyArray(position)
-            | Self::KeyTable(position)
-            | Self::KeySection(position)
-            | Self::KeyBlock(position)
-            | Self::KeyModule(position)
-            | Self::KeyUse(position)
-            | Self::KeyAs(position)
-            | Self::KeySchema(position)
-            | Self::Int((position, ..))
-            | Self::Float((position, ..))
-            | Self::MacroString((position, ..))
-            | Self::LabelIdentifier((position, ..))
-            | Self::ByteString((position, ..))
-            | Self::String((position, ..))
-            | Self::Identifier((position, ..))
-            | Self::MacroIdentifier((position, ..))
-            | Self::ControlIdentifier((position, ..))
-            | Self::Version((position, ..))
-            | Self::Require((position, ..))
-            | Self::LineComment((position, ..))
-            | Self::MultiLineComment((position, ..)) => position.clone(),
-            _ => Position::default(),
+            Self::Error(source)
+            | Self::True(source)
+            | Self::False(source)
+            | Self::Exclaim(source)
+            | Self::Dollar(source)
+            | Self::LBracket(source)
+            | Self::RBracket(source)
+            | Self::LBrace(source)
+            | Self::RBrace(source)
+            | Self::LParen(source)
+            | Self::RParen(source)
+            | Self::Assign(source)
+            | Self::Colon(source)
+            | Self::Question(source)
+            | Self::Comma(source)
+            | Self::KeyNull(source)
+            | Self::KeyBool(source)
+            | Self::KeyString(source)
+            | Self::KeyInt(source)
+            | Self::KeyInt8(source)
+            | Self::KeyInt16(source)
+            | Self::KeyInt32(source)
+            | Self::KeyInt64(source)
+            | Self::KeyUInt8(source)
+            | Self::KeyUInt16(source)
+            | Self::KeyUInt32(source)
+            | Self::KeyUInt64(source)
+            | Self::KeyFloat(source)
+            | Self::KeyFloat32(source)
+            | Self::KeyFloat64(source)
+            | Self::KeyBytes(source)
+            | Self::KeyVersion(source)
+            | Self::KeyRequire(source)
+            | Self::KeyLabel(source)
+            | Self::KeyArray(source)
+            | Self::KeyTable(source)
+            | Self::KeySection(source)
+            | Self::KeyBlock(source)
+            | Self::KeyModule(source)
+            | Self::KeyUse(source)
+            | Self::KeyAs(source)
+            | Self::KeySchema(source)
+            | Self::Int((source, ..))
+            | Self::Float((source, ..))
+            | Self::MacroString((source, ..))
+            | Self::LabelIdentifier((source, ..))
+            | Self::ByteString((source, ..))
+            | Self::String((source, ..))
+            | Self::Identifier((source, ..))
+            | Self::MacroIdentifier((source, ..))
+            | Self::ControlIdentifier((source, ..))
+            | Self::Version((source, ..))
+            | Self::Require((source, ..))
+            | Self::LineComment((source, ..))
+            | Self::MultiLineComment((source, ..)) => {
+                let mut src = source.clone();
+                if let Some(module_name) = module.as_ref() {
+                    src.set_module(module_name.as_str());
+                }
+                src
+            }
+            _ => Location::default(),
         }
     }
 }
 
 impl fmt::Display for Token {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_fmt(format_args!("{:?}", self))
     }
 }
@@ -335,13 +338,13 @@ impl From<HashableFloat> for f64 {
     }
 }
 
-fn multiline_comment(lexer: &mut Lexer<Token>) -> (Position, String) {
+fn multiline_comment(lexer: &mut Lexer<Token>) -> (Location, String) {
     let slice = lexer.slice();
     let comment = slice.trim_start_matches("/*").trim_end_matches("*/").trim();
     (base_callback(lexer), comment.to_string())
 }
 
-fn line_comment(lexer: &mut Lexer<Token>) -> (Position, String) {
+fn line_comment(lexer: &mut Lexer<Token>) -> (Location, String) {
     let slice = lexer.slice();
     let comment = slice
         .lines()
@@ -351,33 +354,31 @@ fn line_comment(lexer: &mut Lexer<Token>) -> (Position, String) {
     (base_callback(lexer), comment.to_string())
 }
 
-fn version_require(
-    lexer: &mut Lexer<Token>,
-) -> super::error::Result<(Position, semver::VersionReq)> {
+fn version_require(lexer: &mut Lexer<Token>) -> Result<(Location, semver::VersionReq)> {
     let slice = lexer.slice();
-    let position = base_callback(lexer);
+    let location = base_callback(lexer);
     Ok((
-        position.clone(),
-        semver::VersionReq::parse(slice).map_err(|e| super::error::Error::InvalidRequire {
-            position: position.clone(),
+        location.clone(),
+        semver::VersionReq::parse(slice).map_err(|e| error::Error::Require {
+            location: location.clone(),
             reason: e.to_string(),
         })?,
     ))
 }
 
-fn version_literal(lexer: &mut Lexer<Token>) -> super::error::Result<(Position, semver::Version)> {
+fn version_literal(lexer: &mut Lexer<Token>) -> Result<(Location, semver::Version)> {
     let slice = lexer.slice();
-    let position = base_callback(lexer);
+    let location = base_callback(lexer);
     Ok((
-        position.clone(),
-        semver::Version::parse(slice).map_err(|e| super::error::Error::InvalidVersion {
-            position: position.clone(),
+        location.clone(),
+        semver::Version::parse(slice).map_err(|e| error::Error::Version {
+            location: location.clone(),
             reason: e.to_string(),
         })?,
     ))
 }
 
-fn quote_string(lexer: &mut Lexer<Token>) -> (Position, String) {
+fn quote_string(lexer: &mut Lexer<Token>) -> (Location, String) {
     let slice = lexer.slice();
     let value = slice
         .trim_start_matches('"')
@@ -387,23 +388,23 @@ fn quote_string(lexer: &mut Lexer<Token>) -> (Position, String) {
     (base_callback(lexer), value.to_string())
 }
 
-fn byte_string(lexer: &mut Lexer<Token>) -> super::error::Result<(Position, Vec<u8>)> {
+fn byte_string(lexer: &mut Lexer<Token>) -> Result<(Location, Vec<u8>)> {
     let slice = lexer
         .slice()
         .trim_start_matches("b'")
         .trim_end_matches('\'');
-    let position = base_callback(lexer);
+    let location = base_callback(lexer);
     Ok((
-        position.clone(),
+        location.clone(),
         base64::engine::general_purpose::STANDARD
             .decode(slice)
-            .context(super::error::InvalidBase64Snafu {
-                position: position.clone(),
+            .context(error::Base64Snafu {
+                location: location.clone(),
             })?,
     ))
 }
 
-fn macro_string(lexer: &mut Lexer<Token>) -> (Position, String) {
+fn macro_string(lexer: &mut Lexer<Token>) -> (Location, String) {
     let slice = lexer.slice();
     (
         base_callback(lexer),
@@ -414,26 +415,32 @@ fn macro_string(lexer: &mut Lexer<Token>) -> (Position, String) {
     )
 }
 
-fn float(lexer: &mut Lexer<Token>) -> super::error::Result<(Position, HashableFloat)> {
+fn float(lexer: &mut Lexer<Token>) -> Result<(Location, HashableFloat)> {
     let slice = lexer.slice();
-    let position = base_callback(lexer);
+    let location = base_callback(lexer);
     if slice.ends_with("f64") {
         let slice = slice.trim_end_matches("f64");
         return Ok((
-            position,
-            HashableFloat::Float64(slice.parse().context(super::error::InvalidFloatSnafu)?),
+            location.clone(),
+            HashableFloat::Float64(slice.parse().context(super::error::FloatSnafu {
+                location: location.clone(),
+            })?),
         ));
     }
     if slice.ends_with("f32") {
         let slice = slice.trim_end_matches("f32");
         return Ok((
-            position,
-            HashableFloat::Float32(slice.parse().context(super::error::InvalidFloatSnafu)?),
+            location.clone(),
+            HashableFloat::Float32(slice.parse().context(error::FloatSnafu {
+                location: location.clone(),
+            })?),
         ));
     }
     Ok((
-        position,
-        HashableFloat::Generic(slice.parse().context(super::error::InvalidFloatSnafu)?),
+        location.clone(),
+        HashableFloat::Generic(slice.parse().context(FloatSnafu {
+            location: location.clone(),
+        })?),
     ))
 }
 
@@ -441,20 +448,24 @@ macro_rules! number {
     ($radix_name: ident : $radix: literal [ $($type: ident as $wrap: ident where $suffix: literal),* ] ) => {
         pub(crate) mod $radix_name {
             use snafu::ResultExt;
-            pub fn integer(lexer: &mut logos::Lexer<$crate::lang::Token>) -> $crate::lang::error::Result<($crate::lang::Position, super::Integer)> {
-                let position = $crate::lang::lexer::base_callback(lexer);
+            pub fn integer(lexer: &mut logos::Lexer<$crate::syn::Token>) -> $crate::syn::Result<($crate::ast::Location, super::Integer)> {
+                let location = $crate::syn::lexer::base_callback(lexer);
                 let slice = lexer.slice().replace('_', "");
                 let slice = slice.as_str();
                 let slice = slice.trim_start_matches("0x").trim_start_matches("0o").trim_start_matches("0b");
                 $(
                     if slice.ends_with($suffix) {
                         let slice = slice.trim_end_matches($suffix);
-                        let value = $type::from_str_radix(slice, $radix).context($crate::lang::error::InvalidIntegerSnafu)?;
-                        return Ok((position, super::Integer::$wrap(value)));
+                        let value = $type::from_str_radix(slice, $radix).context($crate::syn::error::IntegerSnafu {
+                            location: location.clone(),
+                        })?;
+                        return Ok((location.clone(), super::Integer::$wrap(value)));
                     }
                 )*
-                let value = i64::from_str_radix(slice, $radix).context($crate::lang::error::InvalidIntegerSnafu)?;
-                Ok((position, super::Integer::Signed(value)))
+                let value = i64::from_str_radix(slice, $radix).context($crate::syn::error::IntegerSnafu {
+                    location: location.clone(),
+                })?;
+                Ok((location.clone(), super::Integer::Signed(value)))
             }
         }
     }

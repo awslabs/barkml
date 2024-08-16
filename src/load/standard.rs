@@ -1,82 +1,44 @@
+use std::{
+    ffi::OsStr,
+    fs::{read_dir, File},
+    io::{Read, Seek},
+    path::Path,
+};
+
+use super::{error, Loader, Result};
+use crate::{
+    ast::Statement,
+    syn::{Parser, Token},
+    StatementData,
+};
 use indexmap::IndexMap;
+use logos::Logos;
 use snafu::{ensure, OptionExt, ResultExt};
-use std::fs::{read_dir, File};
-use std::io::{Cursor, Read, Seek};
-use std::path::Path;
 
-use crate::error::{self, Result};
-use crate::lang::from_str;
-use crate::lang::scope::Scope;
-use crate::{Metadata, Statement, StatementData};
+/// This is the standard barkml loader. It supports multiple methodologies of reading and combining
+/// barkml files.
+pub struct StandardLoader {
+    modules: IndexMap<String, Statement>,
+    collisions: bool,
+    resolve_macros: bool,
+}
 
-/// LoaderInterface defines the shared interface for loaders
-pub trait Loader {
-    fn is_resolution_enabled(&self) -> bool;
-    fn is_collision_allowed(&self) -> bool;
-    fn skip_macro_resolution(&mut self) -> Result<&mut Self>;
-    fn mode(&mut self, mode: LoaderMode) -> Result<&mut Self>;
-    fn allow_collisions(&mut self) -> Result<&mut Self>;
-    fn read(&self) -> Result<Statement>;
-
-    fn macro_resolution(&self, module: &Statement) -> Result<Statement> {
-        if self.is_resolution_enabled() {
-            let mut scope = Scope::new(module);
-            scope.apply()
-        } else {
-            Ok(module.clone())
+impl Default for StandardLoader {
+    /// Create a new loader with the default settings
+    /// which is:
+    ///   mode = Single
+    ///   allow_collisions = false
+    ///   resolve_macros = true
+    fn default() -> Self {
+        Self {
+            modules: IndexMap::new(),
+            collisions: false,
+            resolve_macros: true,
         }
-    }
-
-    fn load(&self) -> Result<Statement> {
-        let module = self.read()?;
-        self.macro_resolution(&module)
     }
 }
 
-/// Mode of operation for the configuration
-/// loader.
-pub enum LoaderMode {
-    /// Single will load a single file provided to path
-    /// and expects path to be a file.
-    Single,
-    /// Merge will load a single file by the provided name if it exists
-    /// or if there exists a directory named <path>.d will load and merge
-    /// all configuration files inside said directory
-    Merge,
-}
-
-pub enum Modules {
-    Empty,
-    Single(Statement),
-    Merged(Statement),
-}
-
-impl Modules {
-    pub fn get(&self) -> Statement {
-        match self {
-            Self::Empty => Statement::new_module(".", IndexMap::new(), Metadata::default()),
-            Self::Single(value) => value.clone(),
-            Self::Merged(value) => value.clone(),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        matches!(self, Self::Empty)
-    }
-
-    pub fn add(&mut self, module: &Statement, is_collision_allowed: bool) -> Result<()> {
-        match self {
-            Self::Empty => Ok(()),
-            Self::Single(_) => Ok(()),
-            Self::Merged(value) => {
-                let mut before = value.clone();
-                Self::merge_into(&mut before, module, is_collision_allowed)?;
-                *value = before;
-                Ok(())
-            }
-        }
-    }
-
+impl StandardLoader {
     fn merge_into(
         left: &mut Statement,
         right: &Statement,
@@ -98,8 +60,11 @@ impl Modules {
                     _ => {
                         ensure!(
                             is_collision_allowed,
-                            error::LoaderMergeCollisionSnafu {
-                                id: left.id.clone()
+                            error::CollisionSnafu {
+                                left_id: left.id.clone(),
+                                left_location: left.meta.location.clone(),
+                                right_id: right.id.clone(),
+                                right_location: right.meta.location.clone()
                             }
                         );
                         *left = right.clone();
@@ -109,8 +74,11 @@ impl Modules {
             StatementData::Single(_) => {
                 ensure!(
                     is_collision_allowed,
-                    error::LoaderMergeCollisionSnafu {
-                        id: left.id.clone()
+                    error::CollisionSnafu {
+                        left_id: left.id.clone(),
+                        left_location: left.meta.location.clone(),
+                        right_id: right.id.clone(),
+                        right_location: right.meta.location.clone()
                     }
                 );
                 *left = right.clone();
@@ -118,126 +86,147 @@ impl Modules {
         }
         Ok(())
     }
-}
 
-/// Loader can be used to load a single or directory of configuration files
-/// with user control
-pub struct StandardLoader {
-    mode: LoaderMode,
-    module: Modules,
-    collisions: bool,
-    resolve_macros: bool,
-}
-
-impl Default for StandardLoader {
-    /// Create a new loader with the default settings
-    /// which is:
-    ///   mode = Single
-    ///   allow_collisions = false
-    ///   resolve_macros = true
-    fn default() -> Self {
-        Self {
-            mode: LoaderMode::Single,
-            module: Modules::Empty,
-            collisions: false,
-            resolve_macros: true,
-        }
+    /// When merging or appending multiple files together
+    /// tell the loader to allow collisions and overwrite the first found one with
+    /// the next
+    #[allow(dead_code)]
+    fn allow_collisions(&mut self) -> Result<&mut Self> {
+        self.collisions = true;
+        Ok(self)
     }
-}
 
-impl StandardLoader {
-    fn add_from_file<P>(&mut self, path: P) -> Result<()>
+    /// Add a module with the given name to this loader, if a module already
+    /// exists by the name the modules will be merged
+    pub fn add_module<R>(
+        &mut self,
+        name: &str,
+        code: &mut R,
+        filename: Option<String>,
+    ) -> Result<&mut Self>
+    where
+        R: Read + Seek,
+    {
+        let filename = filename.unwrap_or(name.to_string());
+        let mut module_code = String::default();
+        code.read_to_string(&mut module_code)
+            .context(error::IoSnafu)?;
+        let lexer = Token::lexer(module_code.as_str());
+        let mut parser = Parser::new(filename.as_str(), lexer);
+        let module = parser.parse().context(error::ParseSnafu)?;
+        if let Some(left) = self.modules.get_mut(name) {
+            Self::merge_into(left, &module, self.collisions)?;
+        } else {
+            self.modules.insert(name.to_string(), module);
+        }
+        Ok(self)
+    }
+
+    // Add a single file to this loader as a new module
+    pub fn import<P>(&mut self, path: P) -> Result<&mut Self>
     where
         P: AsRef<Path>,
     {
         let path = path.as_ref();
         let name = basename(path)?;
-        let mut file = File::open(path).map_err(|e| error::Error::Io {
-            reason: e.to_string(),
-        })?;
-        self.add_from_reader(name.as_str(), &mut file)
+        let mut file = File::open(path).context(error::IoSnafu)?;
+        self.add_module(name.as_str(), &mut file, Some(name.clone()))
     }
 
-    fn add_from_reader<R>(&mut self, name: &str, reader: &mut R) -> Result<()>
+    // Add a single file to this loader and merge it into the main module
+    pub fn add_file<P>(&mut self, path: P) -> Result<&mut Self>
     where
-        R: Read + Seek,
+        P: AsRef<Path>,
     {
-        let mut code = String::default();
-        reader
-            .read_to_string(&mut code)
-            .map_err(|e| error::Error::Io {
-                reason: e.to_string(),
-            })?;
-        let module = from_str(code.as_str()).context(error::ParseSnafu { name })?;
-        if self.module.is_empty() {
-            match self.mode {
-                LoaderMode::Single => self.module = Modules::Single(module),
-                LoaderMode::Merge => self.module = Modules::Merged(module),
-            }
-        } else {
-            self.module.add(&module, self.is_collision_allowed())?;
-        }
-        Ok(())
+        let path = path.as_ref();
+        let name = basename(path)?;
+        let mut file = File::open(path).context(error::IoSnafu)?;
+        self.add_module("main", &mut file, Some(name))
     }
 
-    /// Add a path to this loader
-    pub fn path<P>(&mut self, path: P) -> Result<&mut Self>
+    // Add a directory to this loader and import all files as individual modules
+    pub fn import_dir<P>(&mut self, path: P) -> Result<&mut Self>
     where
         P: AsRef<Path>,
     {
         let path = path.as_ref();
         ensure!(
-            path.try_exists().map_err(|e| error::Error::Io {
-                reason: e.to_string()
-            })?,
-            error::LoaderNotFoundSnafu {
+            path.try_exists().context(error::IoSnafu)?,
+            error::NotFoundSnafu {
                 path: path.to_path_buf()
             }
         );
-        match self.mode {
-            LoaderMode::Single => {
-                ensure!(
-                    path.is_file(),
-                    error::LoaderNotFileSnafu {
-                        path: path.to_path_buf()
-                    }
-                );
-                self.add_from_file(path)?;
+        let dir_reader = read_dir(path).context(error::IoSnafu)?;
+        let mut files = Vec::new();
+        for entry in dir_reader {
+            let entry = entry.context(error::IoSnafu)?;
+            let entry_path = entry.path();
+            if entry_path.is_file() && entry_path.extension() == Some(OsStr::new("bml")) {
+                files.push(entry_path.clone());
             }
-            _ => {
-                if path.is_file() {
-                    self.add_from_file(path)?;
-                } else {
-                    // To fix inconsistencies we need to add to sorted list
-                    let dir_reader = read_dir(path).map_err(|e| error::Error::Io {
-                        reason: e.to_string(),
-                    })?;
-                    let mut files = Vec::new();
-                    for entry in dir_reader {
-                        let entry = entry.map_err(|e| error::Error::Io {
-                            reason: e.to_string(),
-                        })?;
-                        let entry_path = entry.path();
-                        if entry_path.is_file() {
-                            files.push(entry_path.clone());
-                        }
-                    }
-                    files.sort();
-                    for file in files.iter() {
-                        self.add_from_file(file)?;
-                    }
-                }
-            }
+        }
+        files.sort();
+        for file in files.iter() {
+            self.import(file)?;
         }
         Ok(self)
     }
 
-    /// Adds an inline string as a configuration module
-    pub fn source(&mut self, name: &str, input: &str) -> Result<&mut Self> {
-        let code_bytes = input.as_bytes().to_vec();
-        let mut cursor = Cursor::new(code_bytes);
-        self.add_from_reader(name, &mut cursor)?;
+    // Add a directory to this loader and merge all files into the main module
+    pub fn add_dir<P>(&mut self, path: P) -> Result<&mut Self>
+    where
+        P: AsRef<Path>,
+    {
+        let path = path.as_ref();
+        ensure!(
+            path.try_exists().context(error::IoSnafu)?,
+            error::NotFoundSnafu {
+                path: path.to_path_buf()
+            }
+        );
+        let dir_reader = read_dir(path).context(error::IoSnafu)?;
+        let mut files = Vec::new();
+        for entry in dir_reader {
+            let entry = entry.context(error::IoSnafu)?;
+            let entry_path = entry.path();
+            if entry_path.is_file() && entry_path.extension() == Some(OsStr::new("bml")) {
+                files.push(entry_path.clone());
+            }
+        }
+        files.sort();
+        for file in files.iter() {
+            self.add_file(file)?;
+        }
         Ok(self)
+    }
+
+    // Load the main module as the provided name. The name should not contain .bml
+    // and should be auto-discoverable in one of the provided search paths. If
+    // the loader finds a <name>.bml file, it will load a single file, however if it finds
+    // a <name>.d directory it will load and merge all bml files inside that directory
+    pub fn main<P>(&mut self, name: &str, search_paths: Vec<P>) -> Result<&mut Self>
+    where
+        P: AsRef<Path>,
+    {
+        // Iterate through the search paths, whichever matches first will be the winner
+        for path in search_paths.iter() {
+            let file_check = path.as_ref().join(name).with_extension("bml");
+            if file_check.exists() && file_check.is_file() {
+                return self.add_file(path);
+            }
+            let dir_check = path.as_ref().join(name).with_extension(".d");
+            if dir_check.exists() && dir_check.is_dir() {
+                return self.add_dir(path);
+            }
+        }
+        error::SearchSnafu {
+            name: name.to_string(),
+            search_paths: search_paths
+                .iter()
+                .map(|x| x.as_ref().to_path_buf())
+                .collect::<Vec<_>>(),
+        }
+        .fail()
     }
 }
 
@@ -246,53 +235,26 @@ impl Loader for StandardLoader {
         self.resolve_macros
     }
 
-    fn is_collision_allowed(&self) -> bool {
-        self.collisions
-    }
-
     fn skip_macro_resolution(&mut self) -> Result<&mut Self> {
         self.resolve_macros = false;
-        Ok(self)
-    }
-
-    /// Set the loader mode to use
-    fn mode(&mut self, mode: LoaderMode) -> Result<&mut Self> {
-        self.mode = mode;
-        Ok(self)
-    }
-
-    /// When merging or appending multiple files together
-    /// tell the loader to allow collisions and overwrite the first found one with
-    /// the next
-    fn allow_collisions(&mut self) -> Result<&mut Self> {
-        self.collisions = true;
         Ok(self)
     }
 
     /// Load all the configuration files and return everything as
     /// a single module
     fn read(&self) -> Result<Statement> {
-        match self.module {
-            Modules::Empty => error::CustomSnafu {
-                message: "no barkml code was read by this loader",
-            }
-            .fail(),
-            _ => Ok(self.module.get().clone()),
-        }
+        self.modules
+            .get("main")
+            .cloned()
+            .context(error::NoMainSnafu)
     }
 }
 
 fn basename<P: AsRef<Path>>(path: P) -> Result<String> {
-    let file_name = path
-        .as_ref()
-        .file_name()
-        .context(error::LoaderModuleParseSnafu)?;
-    let file_name = file_name.to_str().context(error::LoaderModuleParseSnafu)?;
-    let extension = path
-        .as_ref()
-        .extension()
-        .context(error::LoaderModuleParseSnafu)?;
-    let extension = extension.to_str().context(error::LoaderModuleParseSnafu)?;
+    let file_name = path.as_ref().file_name().context(error::BasenameSnafu)?;
+    let file_name = file_name.to_str().context(error::BasenameSnafu)?;
+    let extension = path.as_ref().extension().context(error::BasenameSnafu)?;
+    let extension = extension.to_str().context(error::BasenameSnafu)?;
     Ok(file_name.strip_suffix(extension).unwrap().to_string())
 }
 
@@ -301,8 +263,9 @@ mod test {
     use indexmap::IndexMap;
     use semver::Version;
 
-    use crate::loader::{LoaderMode, StandardLoader};
-    use crate::{Loader, Metadata, Statement, Value};
+    use super::StandardLoader;
+    use crate::ast::{Location, Metadata, Statement, Value};
+    use crate::load::Loader;
 
     #[test]
     pub fn load_single() {
@@ -317,6 +280,7 @@ mod test {
                         Value::new_version(
                             Version::new(1, 0, 0),
                             Metadata {
+                                location: Location::default(),
                                 comment: None,
                                 label: Some("Test".into()),
                             },
@@ -337,6 +301,7 @@ mod test {
                                     None,
                                     Value::new_int(4, Metadata::default()),
                                     Metadata {
+                                        location: Location::default(),
                                         comment: Some("Documentation".into()),
                                         label: None,
                                     },
@@ -461,9 +426,7 @@ mod test {
             Metadata::default(),
         );
         let result = StandardLoader::default()
-            .mode(LoaderMode::Single)
-            .expect("failed to set mode")
-            .path("examples/example.bml")
+            .main("example", vec!["examples"])
             .expect("path detection failed")
             .load()
             .expect("load failed");
@@ -483,6 +446,7 @@ mod test {
                         Value::new_version(
                             Version::new(1, 0, 0),
                             Metadata {
+                                location: Location::default(),
                                 comment: None,
                                 label: Some("Test".into()),
                             },
@@ -503,6 +467,7 @@ mod test {
                                     None,
                                     Value::new_int(4, Metadata::default()),
                                     Metadata {
+                                        location: Location::default(),
                                         comment: Some("Documentation".into()),
                                         label: None,
                                     },
@@ -635,6 +600,7 @@ mod test {
                                     None,
                                     Value::new_int(4, Metadata::default()),
                                     Metadata {
+                                        location: Location::default(),
                                         comment: Some("Documentation".into()),
                                         label: None,
                                     },
@@ -759,9 +725,7 @@ mod test {
             Metadata::default(),
         );
         let result = StandardLoader::default()
-            .mode(LoaderMode::Merge)
-            .expect("failed to set mode")
-            .path("examples/config_append")
+            .main("append", vec!["examples"])
             .expect("path detection failed")
             .load()
             .expect("load failed");

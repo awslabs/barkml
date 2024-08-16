@@ -1,12 +1,14 @@
+use super::types::{StatementType, ValueType};
+use super::{error, Result};
 use super::{Data, Statement, StatementData, Value};
-use crate::error::{self, Result};
-use crate::{StatementType, ValueType};
 use indexmap::{IndexMap, IndexSet};
 use snafu::ensure;
 use std::cmp::max;
 use uuid::Uuid;
 
-pub(crate) struct Scope {
+/// Scope is used to resolve a parent statement (should be a module)
+/// to replace all macros with their appropriate values
+pub struct Scope {
     root: Statement,
     symbol_table: IndexMap<String, Value>,
     path_lookup: IndexMap<Uuid, String>,
@@ -55,7 +57,7 @@ impl Scope {
         scope.path_lookup.insert(node.uid, key.clone());
     }
 
-    pub(crate) fn new(node: &Statement) -> Self {
+    pub fn new(node: &Statement) -> Self {
         let mut scope = Self {
             root: node.clone(),
             symbol_table: IndexMap::new(),
@@ -65,7 +67,7 @@ impl Scope {
         scope
     }
 
-    pub(crate) fn apply(&mut self) -> Result<Statement> {
+    pub fn apply(&mut self) -> Result<Statement> {
         // First we need to walk our root and populate the symbol table
         let mut visit_log = IndexSet::new();
         let root = self.root.clone();
@@ -79,7 +81,10 @@ impl Scope {
             let current_path = self.path_lookup.get(&current.uid);
             ensure!(
                 current_path.is_some(),
-                error::MacroScopeNotFoundSnafu { scope: "null" }
+                error::NotFoundSnafu {
+                    location: current.meta.location.clone(),
+                    path: "unknown"
+                }
             );
             if input.starts_with("super") {
                 let mut current_segments: Vec<&str> = current_path.unwrap().split('.').collect();
@@ -127,7 +132,8 @@ impl Scope {
             // Otherwise it must be a macro string so lets try and process it. If there is no occurent of { we need to error
             ensure!(
                 input.contains('{'),
-                error::MacroNotFoundSnafu {
+                error::NotFoundSnafu {
+                    location: at.meta.location.clone(),
                     path: input.clone()
                 }
             );
@@ -149,7 +155,8 @@ impl Scope {
 
                     let mut found = match self.symbol_table.get_mut(&path) {
                         Some(value) => Ok(value.clone()),
-                        None => error::MacroNotFoundSnafu {
+                        None => error::NotFoundSnafu {
+                            location: at.meta.location.clone(),
                             path: key_string.clone(),
                         }
                         .fail(),
@@ -263,7 +270,7 @@ impl Scope {
                 let new_value = self.resolve_value(at.get_value().unwrap(), visit_log)?;
                 ensure!(
                     new_value.type_of() == *expected,
-                    error::TypeCollisionSnafu {
+                    error::ImplicitConvertSnafu {
                         left: expected.clone(),
                         right: new_value.type_of()
                     }
@@ -280,7 +287,7 @@ impl Scope {
                 let new_value = self.resolve_value(at.get_value().unwrap(), visit_log)?;
                 ensure!(
                     new_value.type_of() == *expected,
-                    error::TypeCollisionSnafu {
+                    error::ImplicitConvertSnafu {
                         left: expected.clone(),
                         right: new_value.type_of()
                     }
@@ -302,7 +309,12 @@ impl Scope {
         let uid = at.uid;
         let result = match &at.data {
             Data::Macro(value) => {
-                ensure!(!visit_log.contains(&uid), error::MacroLoopSnafu);
+                ensure!(
+                    !visit_log.contains(&uid),
+                    error::LoopSnafu {
+                        location: at.meta.location.clone()
+                    }
+                );
                 self.resolve_macro(at, value.clone(), visit_log)
             }
             Data::Table(children) => {

@@ -69,7 +69,8 @@ impl<'source> Parser<'source> {
             Token::KeyUInt8(_) => Ok(ValueType::U8),
             Token::KeyNull(_) => Ok(ValueType::Null),
             Token::KeyBool(_) => Ok(ValueType::Bool),
-            Token::KeyFloat64(_) | Token::KeyFloat(_) => Ok(ValueType::F64),
+            Token::KeyFloat(_) => Ok(ValueType::Float),
+            Token::KeyFloat64(_) => Ok(ValueType::F64),
             Token::KeyFloat32(_) => Ok(ValueType::F32),
             Token::KeyBytes(_) => Ok(ValueType::Bytes),
             Token::KeyVersion(_) => Ok(ValueType::Version),
@@ -232,7 +233,7 @@ impl<'source> Parser<'source> {
             }
             Token::Int((_, Integer::U8(value))) => Ok((Value::new_u8(value, meta), ValueType::U8)),
             Token::Float((_, HashableFloat::Generic(value))) => {
-                Ok((Value::new_float(value, meta), ValueType::Signed))
+                Ok((Value::new_float(value, meta), ValueType::Float))
             }
             Token::Float((_, HashableFloat::Float32(value))) => {
                 Ok((Value::new_f32(value, meta), ValueType::F32))
@@ -718,7 +719,7 @@ mod test {
             ("u16", ValueType::U16),
             ("u32", ValueType::U32),
             ("u64", ValueType::U64),
-            ("float", ValueType::F64),
+            ("float", ValueType::Float),
             ("f32", ValueType::F32),
             ("f64", ValueType::F64),
             ("bool", ValueType::Bool),

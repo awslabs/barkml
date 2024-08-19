@@ -414,7 +414,7 @@ mod test {
                                 .unwrap(),
                             ),
                             (
-                                "blocks.0.3.'label-a'".into(),
+                                "blocks.0.3.label-a".into(),
                                 Statement::new_block(
                                     "blocks",
                                     vec![
@@ -580,7 +580,7 @@ mod test {
                                 .unwrap(),
                             ),
                             (
-                                "blocks.0.3.'label-a'".into(),
+                                "blocks.0.3.label-a".into(),
                                 Statement::new_block(
                                     "blocks",
                                     vec![
@@ -713,7 +713,7 @@ mod test {
                                 .unwrap(),
                             ),
                             (
-                                "blocks.0.3.'label-a'".into(),
+                                "blocks.0.3.label-a".into(),
                                 Statement::new_block(
                                     "blocks",
                                     vec![

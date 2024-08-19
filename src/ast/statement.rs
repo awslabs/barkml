@@ -259,15 +259,25 @@ impl Statement {
 
     pub fn inject_id(&self) -> String {
         match &self.data {
-            StatementData::Labeled(labels, ..) => format!(
-                "{}.{}",
-                self.id,
-                labels
-                    .iter()
-                    .map(|x| x.to_string())
-                    .collect::<Vec<_>>()
-                    .join(".")
-            ),
+            StatementData::Labeled(labels, ..) => {
+                if labels.is_empty() {
+                    self.id.clone()
+                } else {
+                    format!(
+                        "{}.{}",
+                        self.id,
+                        labels
+                            .iter()
+                            .map(|x| x
+                                .to_string()
+                                .trim_matches('\'')
+                                .trim_matches('"')
+                                .to_string())
+                            .collect::<Vec<_>>()
+                            .join(".")
+                    )
+                }
+            }
             _ => self.id.clone(),
         }
     }

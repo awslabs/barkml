@@ -231,11 +231,11 @@ impl StandardLoader {
         for path in search_paths.iter() {
             let file_check = path.as_ref().join(name).with_extension("bml");
             if file_check.exists() && file_check.is_file() {
-                return self.add_file(path);
+                return self.add_file(file_check);
             }
-            let dir_check = path.as_ref().join(name).with_extension(".d");
+            let dir_check = path.as_ref().join(name).with_extension("d");
             if dir_check.exists() && dir_check.is_dir() {
-                return self.add_dir(path);
+                return self.add_dir(dir_check);
             }
         }
         error::SearchSnafu {

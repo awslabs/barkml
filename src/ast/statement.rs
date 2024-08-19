@@ -1,6 +1,6 @@
 use super::types::{Metadata, StatementType, ValueType};
 use super::value::{Data, Value};
-use super::{error, Result};
+use crate::{error, Result};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::fmt;

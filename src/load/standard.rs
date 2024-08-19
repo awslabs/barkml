@@ -5,15 +5,16 @@ use std::{
     path::Path,
 };
 
-use super::{error, Loader, Result};
+use super::Loader;
 use crate::{
     ast::Statement,
     syn::{Parser, Token},
     StatementData,
 };
+use crate::{error, Result};
 use indexmap::IndexMap;
 use logos::Logos;
-use snafu::{ensure, OptionExt, ResultExt};
+use snafu::{ensure, OptionExt};
 
 /// This is the standard barkml loader. It supports multiple methodologies of reading and combining
 /// barkml files.
@@ -110,10 +111,12 @@ impl StandardLoader {
         let filename = filename.unwrap_or(name.to_string());
         let mut module_code = String::default();
         code.read_to_string(&mut module_code)
-            .context(error::IoSnafu)?;
+            .map_err(|e| error::Error::Io {
+                reason: e.to_string(),
+            })?;
         let lexer = Token::lexer(module_code.as_str());
         let mut parser = Parser::new(filename.as_str(), lexer);
-        let module = parser.parse().context(error::ParseSnafu)?;
+        let module = parser.parse()?;
         if let Some(left) = self.modules.get_mut(name) {
             Self::merge_into(left, &module, self.collisions)?;
         } else {
@@ -129,7 +132,9 @@ impl StandardLoader {
     {
         let path = path.as_ref();
         let name = basename(path)?;
-        let mut file = File::open(path).context(error::IoSnafu)?;
+        let mut file = File::open(path).map_err(|e| error::Error::Io {
+            reason: e.to_string(),
+        })?;
         self.add_module(name.as_str(), &mut file, Some(name.clone()))
     }
 
@@ -140,7 +145,9 @@ impl StandardLoader {
     {
         let path = path.as_ref();
         let name = basename(path)?;
-        let mut file = File::open(path).context(error::IoSnafu)?;
+        let mut file = File::open(path).map_err(|e| error::Error::Io {
+            reason: e.to_string(),
+        })?;
         self.add_module("main", &mut file, Some(name))
     }
 
@@ -151,15 +158,21 @@ impl StandardLoader {
     {
         let path = path.as_ref();
         ensure!(
-            path.try_exists().context(error::IoSnafu)?,
+            path.try_exists().map_err(|e| error::Error::Io {
+                reason: e.to_string(),
+            })?,
             error::NotFoundSnafu {
                 path: path.to_path_buf()
             }
         );
-        let dir_reader = read_dir(path).context(error::IoSnafu)?;
+        let dir_reader = read_dir(path).map_err(|e| error::Error::Io {
+            reason: e.to_string(),
+        })?;
         let mut files = Vec::new();
         for entry in dir_reader {
-            let entry = entry.context(error::IoSnafu)?;
+            let entry = entry.map_err(|e| error::Error::Io {
+                reason: e.to_string(),
+            })?;
             let entry_path = entry.path();
             if entry_path.is_file() && entry_path.extension() == Some(OsStr::new("bml")) {
                 files.push(entry_path.clone());
@@ -179,15 +192,21 @@ impl StandardLoader {
     {
         let path = path.as_ref();
         ensure!(
-            path.try_exists().context(error::IoSnafu)?,
+            path.try_exists().map_err(|e| error::Error::Io {
+                reason: e.to_string(),
+            })?,
             error::NotFoundSnafu {
                 path: path.to_path_buf()
             }
         );
-        let dir_reader = read_dir(path).context(error::IoSnafu)?;
+        let dir_reader = read_dir(path).map_err(|e| error::Error::Io {
+            reason: e.to_string(),
+        })?;
         let mut files = Vec::new();
         for entry in dir_reader {
-            let entry = entry.context(error::IoSnafu)?;
+            let entry = entry.map_err(|e| error::Error::Io {
+                reason: e.to_string(),
+            })?;
             let entry_path = entry.path();
             if entry_path.is_file() && entry_path.extension() == Some(OsStr::new("bml")) {
                 files.push(entry_path.clone());

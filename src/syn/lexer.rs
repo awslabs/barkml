@@ -1,5 +1,4 @@
-use super::error::FloatSnafu;
-use super::{error, Result};
+use crate::{error, Result};
 use base64::Engine;
 use logos::{Lexer, Logos, Skip};
 use snafu::ResultExt;
@@ -43,7 +42,7 @@ fn base_callback(lex: &mut Lexer<Token>) -> Location {
 
 /// Represents the allowed tokens in a barkml file
 #[derive(Logos, Debug, PartialEq, Eq, Clone, Hash)]
-#[logos(error = super::error::Error)]
+#[logos(error = error::Error)]
 #[logos(extras = Location)]
 #[logos(skip r"[ \t\f\r]+")] // Ignore this regex pattern between tokens
 pub enum Token {
@@ -422,7 +421,7 @@ fn float(lexer: &mut Lexer<Token>) -> Result<(Location, HashableFloat)> {
         let slice = slice.trim_end_matches("f64");
         return Ok((
             location.clone(),
-            HashableFloat::Float64(slice.parse().context(super::error::FloatSnafu {
+            HashableFloat::Float64(slice.parse().context(error::FloatSnafu {
                 location: location.clone(),
             })?),
         ));
@@ -438,7 +437,7 @@ fn float(lexer: &mut Lexer<Token>) -> Result<(Location, HashableFloat)> {
     }
     Ok((
         location.clone(),
-        HashableFloat::Generic(slice.parse().context(FloatSnafu {
+        HashableFloat::Generic(slice.parse().context(error::FloatSnafu {
             location: location.clone(),
         })?),
     ))
@@ -448,7 +447,7 @@ macro_rules! number {
     ($radix_name: ident : $radix: literal [ $($type: ident as $wrap: ident where $suffix: literal),* ] ) => {
         pub(crate) mod $radix_name {
             use snafu::ResultExt;
-            pub fn integer(lexer: &mut logos::Lexer<$crate::syn::Token>) -> $crate::syn::Result<($crate::ast::Location, super::Integer)> {
+            pub fn integer(lexer: &mut logos::Lexer<$crate::syn::Token>) -> $crate::Result<($crate::ast::Location, super::Integer)> {
                 let location = $crate::syn::lexer::base_callback(lexer);
                 let slice = lexer.slice().replace('_', "");
                 let slice = slice.as_str();
@@ -456,13 +455,13 @@ macro_rules! number {
                 $(
                     if slice.ends_with($suffix) {
                         let slice = slice.trim_end_matches($suffix);
-                        let value = $type::from_str_radix(slice, $radix).context($crate::syn::error::IntegerSnafu {
+                        let value = $type::from_str_radix(slice, $radix).context($crate::error::IntegerSnafu {
                             location: location.clone(),
                         })?;
                         return Ok((location.clone(), super::Integer::$wrap(value)));
                     }
                 )*
-                let value = i64::from_str_radix(slice, $radix).context($crate::syn::error::IntegerSnafu {
+                let value = i64::from_str_radix(slice, $radix).context($crate::error::IntegerSnafu {
                     location: location.clone(),
                 })?;
                 Ok((location.clone(), super::Integer::Signed(value)))

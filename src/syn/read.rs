@@ -5,7 +5,7 @@ use logos::Lexer;
 use crate::ast::Location;
 
 use super::lexer::Token;
-use super::Result;
+use crate::Result;
 
 pub trait Read<'source> {
     fn peek(&mut self) -> Result<Option<Token>>;

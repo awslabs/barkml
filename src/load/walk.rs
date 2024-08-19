@@ -55,6 +55,13 @@ impl<'source> Walk<'source> {
         }
     }
 
+    pub fn get_id(&self) -> Option<String> {
+        match self {
+            Self::Statement(stmt) => Some(stmt.id.clone()),
+            Self::Value(_) => None,
+        }
+    }
+
     /// Fetch and convert the label of a block
     pub fn get_label<T>(&self, index: usize) -> Result<T>
     where
@@ -73,6 +80,54 @@ impl<'source> Walk<'source> {
                     index,
                 })?
                 .try_into(),
+            Self::Value(value) => error::NotScopeSnafu {
+                location: value.meta.location.clone(),
+            }
+            .fail(),
+        }
+    }
+
+    /// Get all sections in this scope
+    pub fn get_sections(&self) -> Result<IndexSet<String>> {
+        match self {
+            Self::Statement(stmt) => Ok(stmt
+                .get_grouped()
+                .context(error::NotScopeSnafu {
+                    location: stmt.meta.location.clone(),
+                })?
+                .iter()
+                .filter_map(|(k, s)| {
+                    if matches!(s.type_, crate::StatementType::Section(..)) {
+                        Some(k.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()),
+            Self::Value(value) => error::NotScopeSnafu {
+                location: value.meta.location.clone(),
+            }
+            .fail(),
+        }
+    }
+
+    /// Get all blocks without worrying about the id
+    pub fn get_all_blocks(&self) -> Result<IndexSet<String>> {
+        match self {
+            Self::Statement(stmt) => Ok(stmt
+                .get_grouped()
+                .context(error::NotScopeSnafu {
+                    location: stmt.meta.location.clone(),
+                })?
+                .iter()
+                .filter_map(|(k, s)| {
+                    if matches!(s.type_, crate::StatementType::Block { .. }) {
+                        Some(k.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()),
             Self::Value(value) => error::NotScopeSnafu {
                 location: value.meta.location.clone(),
             }

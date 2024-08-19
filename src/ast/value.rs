@@ -1,6 +1,6 @@
-use super::error;
 use super::types::Metadata;
 use super::types::ValueType;
+use crate::error;
 use base64::Engine;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -85,14 +85,15 @@ macro_rules! variant {
 
 macro_rules! try_into {
     ($fn_name: ident, $ty_name: ty, $vty: expr) => {
-        impl<'a> TryInto<$ty_name> for &'a Value {
+        impl<'a> TryFrom<&'a Value> for $ty_name {
             type Error = error::Error;
 
-            fn try_into(self) -> std::result::Result<$ty_name, Self::Error> {
-                self.$fn_name()
+            fn try_from(value: &'a Value) -> std::result::Result<$ty_name, Self::Error> {
+                value
+                    .$fn_name()
                     .context(error::ImplicitConvertSnafu {
                         left: $vty,
-                        right: self.type_of(),
+                        right: value.type_of(),
                     })
                     .cloned()
             }
@@ -115,79 +116,76 @@ try_into!(as_bool, bool, ValueType::Bool);
 try_into!(as_version, semver::Version, ValueType::Version);
 try_into!(as_require, semver::VersionReq, ValueType::Require);
 
-impl<'a> TryInto<i64> for &'a Value {
+impl<'a> TryFrom<&'a Value> for i64 {
     type Error = error::Error;
 
-    fn try_into(self) -> std::result::Result<i64, Self::Error> {
-        self.as_i64()
-            .or(self.as_int())
+    fn try_from(value: &'a Value) -> Result<Self, Self::Error> {
+        value
+            .as_i64()
+            .or(value.as_int())
             .context(error::ImplicitConvertSnafu {
                 left: ValueType::I64,
-                right: self.type_of(),
+                right: value.type_of(),
             })
             .cloned()
     }
 }
 
-impl<'a> TryInto<u64> for &'a Value {
+impl<'a> TryFrom<&'a Value> for u64 {
     type Error = error::Error;
 
-    fn try_into(self) -> std::result::Result<u64, Self::Error> {
-        self.as_u64()
-            .or(self.as_uint())
+    fn try_from(value: &'a Value) -> std::result::Result<u64, Self::Error> {
+        value
+            .as_u64()
+            .or(value.as_uint())
             .context(error::ImplicitConvertSnafu {
                 left: ValueType::U64,
-                right: self.type_of(),
+                right: value.type_of(),
             })
             .cloned()
     }
 }
 
-impl<'a> TryInto<f64> for &'a Value {
+impl<'a> TryFrom<&'a Value> for f64 {
     type Error = error::Error;
 
-    fn try_into(self) -> std::result::Result<f64, Self::Error> {
-        self.as_f64()
-            .or(self.as_float())
+    fn try_from(value: &'a Value) -> std::result::Result<f64, Self::Error> {
+        value
+            .as_f64()
+            .or(value.as_float())
             .context(error::ImplicitConvertSnafu {
                 left: ValueType::F64,
-                right: self.type_of(),
+                right: value.type_of(),
             })
             .cloned()
     }
 }
 
-impl<'a, T> TryInto<Vec<T>> for &'a Value
-where
-    T: TryFrom<&'a Value, Error = error::Error>,
-{
+impl<'a> TryFrom<&'a Value> for Vec<Value> {
     type Error = error::Error;
 
-    fn try_into(self) -> std::result::Result<Vec<T>, Self::Error> {
+    fn try_from(value: &'a Value) -> std::result::Result<Vec<Value>, Self::Error> {
         let mut result = Vec::new();
-        for element in self.as_array().context(error::ImplicitConvertSnafu {
-            left: ValueType::Array(vec![]),
-            right: self.type_of(),
+        for value in value.as_array().context(error::ImplicitConvertSnafu {
+            left: ValueType::Array(Vec::new()),
+            right: value.type_of(),
         })? {
-            result.push(element.try_into()?);
+            result.push(value.clone());
         }
         Ok(result)
     }
 }
 
-impl<'a, T> TryInto<IndexMap<String, T>> for &'a Value
-where
-    T: TryFrom<&'a Value, Error = error::Error>,
-{
+impl<'a> TryFrom<&'a Value> for IndexMap<String, Value> {
     type Error = error::Error;
 
-    fn try_into(self) -> std::result::Result<IndexMap<String, T>, Self::Error> {
+    fn try_from(value: &'a Value) -> std::result::Result<IndexMap<String, Value>, Self::Error> {
         let mut result = IndexMap::new();
-        for (key, value) in self.as_table().context(error::ImplicitConvertSnafu {
+        for (key, value) in value.as_table().context(error::ImplicitConvertSnafu {
             left: ValueType::Table(IndexMap::new()),
-            right: self.type_of(),
+            right: value.type_of(),
         })? {
-            result.insert(key.clone(), value.try_into()?);
+            result.insert(key.clone(), value.clone());
         }
         Ok(result)
     }

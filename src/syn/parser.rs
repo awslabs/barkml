@@ -1,7 +1,7 @@
 use super::lexer::{HashableFloat, Integer, Token};
 use super::read::{Read, TokenReader};
-use super::{error, Result};
 use crate::ast::{Location, Metadata, Statement, Value, ValueType};
+use crate::{error, Result};
 use indexmap::IndexMap;
 use logos::Lexer;
 use snafu::{ensure, OptionExt};
@@ -327,10 +327,12 @@ impl<'source> Parser<'source> {
                         _ => {
                             return error::ExpectedSnafu {
                                 location,
-                                expected: [",".to_string(),
+                                expected: [
+                                    ",".to_string(),
                                     "}".to_string(),
                                     "identifier".to_string(),
-                                    "string".to_string()]
+                                    "string".to_string(),
+                                ]
                                 .join(" "),
                                 got: token.clone(),
                             }

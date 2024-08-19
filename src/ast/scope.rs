@@ -1,6 +1,6 @@
 use super::types::{StatementType, ValueType};
-use super::{error, Result};
 use super::{Data, Statement, StatementData, Value};
+use crate::{error, Result};
 use indexmap::{IndexMap, IndexSet};
 use snafu::ensure;
 use std::cmp::max;
@@ -81,7 +81,7 @@ impl Scope {
             let current_path = self.path_lookup.get(&current.uid);
             ensure!(
                 current_path.is_some(),
-                error::NotFoundSnafu {
+                error::NoMacroSnafu {
                     location: current.meta.location.clone(),
                     path: "unknown"
                 }
@@ -132,7 +132,7 @@ impl Scope {
             // Otherwise it must be a macro string so lets try and process it. If there is no occurent of { we need to error
             ensure!(
                 input.contains('{'),
-                error::NotFoundSnafu {
+                error::NoMacroSnafu {
                     location: at.meta.location.clone(),
                     path: input.clone()
                 }
@@ -155,7 +155,7 @@ impl Scope {
 
                     let mut found = match self.symbol_table.get_mut(&path) {
                         Some(value) => Ok(value.clone()),
-                        None => error::NotFoundSnafu {
+                        None => error::NoMacroSnafu {
                             location: at.meta.location.clone(),
                             path: key_string.clone(),
                         }

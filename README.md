@@ -4,18 +4,10 @@ BarkML is a declarative configuration format that is inspired by other languages
 created initially to be used with operational tools and generative tooling. The language defaults to utf-8 parsing and
 the language supports self-referential macro replacements.
 
-## Features
-
-default_features = [] no features are default
-
-* **full** All features listed below
-* **binary** MessagePack binary encoding support
 
 # Language Specification
 
 ## Statements
-
-Statements in BarkML must be defined ending with a new-line.
 
 ### Control Statements
 
@@ -31,7 +23,7 @@ $<name> = (!<label>)? <value>
 **Example:**
 
 ```
-$schema = !MyProgram "1.0.0"
+$control_id = !MyProgram 1.0.0
 ```
 
 The above example could be a way to define what schema this barkml utilizes. Note schema
@@ -87,12 +79,13 @@ Any back to back lines with # will be concatenated into a multiline comment.
 ### Blocks
 
 BarkML supports grouping and labeling a set of statements as blocks. These blocks can have 0 or more labels associated
-with them
+with them of any value type. If you wish to fetch or refer to a block in a macro or from the walker class the scope id will always be
+the id + labels all joined with '.'
 
 **Syntax:**
 
 ```
-<id> ["<label>" | '<label>'] {
+<id> [<label>] {
   <child-statements...>
 }
 ```
@@ -123,16 +116,18 @@ foo = "bar"
 Integers are specified as numerical values and unless provided a suffix will be read as a signed 64-bit number.
 Numbers can be specified with precision utilizing the following suffices
 
-| Suffix | Precision        |
-|--------|------------------|
-| u8     | Unsigned 8-byte  |
-| u16    | Unsigned 16-byte |
-| u32    | Unsigned 32-byte |
-| u64    | Unsigned 64-byte |
-| i8     | Signed 8-byte    |
-| i16    | Signed 16-byte   |
-| i32    | Signed 32-byte   |
-| i64    | Signed 64-byte   |
+| Suffix | Precision         |
+|--------|-------------------|
+| u8     | Unsigned 8-byte   |
+| u16    | Unsigned 16-byte  |
+| u32    | Unsigned 32-byte  |
+| u64    | Unsigned 64-byte  |
+| u128   | Unsigned 128-byte |
+| i8     | Signed 8-byte     |
+| i16    | Signed 16-byte    |
+| i32    | Signed 32-byte    |
+| i64    | Signed 64-byte    |
+| i128   | Signed 128-byte   |
 
 **Examples:**
 

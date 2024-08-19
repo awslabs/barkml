@@ -1,3 +1,21 @@
+## 0.7.0
+
+Changes:
+
+* Introduces 128-bit integer types
+* Refactors crate into a more maintainable structure
+* Resplits Statements and Values for better data representation
+* Improves error messages
+* Implements a new Walker for easily reading and converting data
+* Makes Statement and Value implement Serialize + Deserialize
+* Consolidates comments and labels into new Metadata type
+
+Removes:
+
+* binary feature no longer supported, instead Value and Statement implement Serialize and Deserialize
+  allowing users to use rmp-serde to serialize the AST types directly.
+
+
 ## 0.6.8
 
 Changes:

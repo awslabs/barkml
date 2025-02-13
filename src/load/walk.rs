@@ -18,6 +18,26 @@ impl<'source> Walk<'source> {
         Self::Statement(module)
     }
 
+    /// Fetch a child of a statement
+    pub fn get_child(&self, field: &str) -> Result<&Statement> {
+        match self {
+            Self::Statement(stmt) => stmt
+                .get_grouped()
+                .context(error::NotScopeSnafu {
+                    location: stmt.meta.location.clone(),
+                })?
+                .get(field)
+                .context(error::NoFieldSnafu {
+                    field,
+                    location: stmt.meta.location.clone(),
+                }),
+            Self::Value(value) => error::NotScopeSnafu {
+                location: value.meta.location.clone(),
+            }
+            .fail(),
+        }
+    }
+
     /// Fetch and convert the value of a given field
     pub fn get<T>(&self, field: &str) -> Result<T>
     where

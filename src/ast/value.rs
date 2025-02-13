@@ -32,7 +32,7 @@ pub enum Data {
     Version(semver::Version),
     Require(semver::VersionReq),
     Macro(String),
-    Label(String),
+    Symbol(String),
     Null,
     Array(Vec<Value>),
     Table(IndexMap<String, Value>),
@@ -213,7 +213,7 @@ impl Value {
     variant!(fn new_version, as_version, as_version_mut (semver::Version => Version));
     variant!(fn new_require, as_require, as_require_mut (semver::VersionReq => Require));
     variant!(fn new_macro, as_macro, as_macro_mut (String => Macro));
-    variant!(fn new_label, as_label, as_label_mut (String => Label));
+    variant!(fn new_symbol, as_symbol, as_symbol_mut (String => Symbol));
     variant!(fn new_array, as_array, as_array_mut (Vec<Value> => Array));
     variant!(fn new_table, as_table, as_table_mut (IndexMap<String, Value> => Table));
 
@@ -231,7 +231,7 @@ impl Value {
 
     pub(crate) fn to_macro_string(&self) -> String {
         match &self.data {
-            Data::Macro(value) | Data::Label(value) | Data::String(value) => value.clone(),
+            Data::Macro(value) | Data::Symbol(value) | Data::String(value) => value.clone(),
             Data::Array(array) => array
                 .iter()
                 .map(|x| x.to_macro_string())
@@ -288,7 +288,7 @@ impl Value {
             Data::Bytes(_) => ValueType::Bytes,
             Data::Bool(_) => ValueType::Bool,
             Data::Macro(_) => ValueType::Macro,
-            Data::Label(_) => ValueType::Label,
+            Data::Symbol(_) => ValueType::Symbol,
             Data::Version(_) => ValueType::Version,
             Data::Require(_) => ValueType::Require,
             Data::Array(values) => ValueType::Array(values.iter().map(|x| x.type_of()).collect()),
@@ -340,7 +340,7 @@ impl fmt::Display for Value {
                 base64::engine::general_purpose::STANDARD.encode(value.as_slice())
             )),
             Data::Macro(value) => f.write_fmt(format_args!("m!'{value}'")),
-            Data::Label(value) => f.write_fmt(format_args!("!{value}")),
+            Data::Symbol(value) => f.write_fmt(format_args!(":{value}")),
             Data::Null => f.write_fmt(format_args!("null")),
             Data::Version(value) => f.write_fmt(format_args!("{value}")),
             Data::Require(value) => f.write_fmt(format_args!("{value}")),

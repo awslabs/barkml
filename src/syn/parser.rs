@@ -76,6 +76,7 @@ impl<'source> Parser<'source> {
             Token::KeyVersion(_) => Ok(ValueType::Version),
             Token::KeyRequire(_) => Ok(ValueType::Require),
             Token::KeyLabel(_) => Ok(ValueType::Label),
+            Token::KeySymbol(_) => Ok(ValueType::Symbol),
             Token::KeyArray(location) => {
                 let mut location = location.clone();
                 location.set_module(self.tokens.module_name.as_str());
@@ -243,6 +244,9 @@ impl<'source> Parser<'source> {
             }
             Token::String((_, value)) => {
                 Ok((Value::new_string(value.clone(), meta), ValueType::String))
+            }
+            Token::SymbolIdentifier((_, value)) => {
+                Ok((Value::new_symbol(value.clone(), meta), ValueType::Symbol))
             }
             Token::MacroString((_, value)) => {
                 Ok((Value::new_macro(value.clone(), meta), ValueType::Macro))
@@ -570,6 +574,13 @@ mod test {
                 ),
             ),
             (
+                ":hello/world",
+                (
+                    Value::new_symbol("hello/world".to_string(), Metadata::default()),
+                    ValueType::Symbol,
+                ),
+            ),
+            (
                 "-3",
                 (Value::new_int(-3, Metadata::default()), ValueType::Signed),
             ),
@@ -719,6 +730,7 @@ mod test {
             ("u16", ValueType::U16),
             ("u32", ValueType::U32),
             ("u64", ValueType::U64),
+            ("symbol", ValueType::Symbol),
             ("float", ValueType::Float),
             ("f32", ValueType::F32),
             ("f64", ValueType::F64),

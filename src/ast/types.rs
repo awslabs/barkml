@@ -58,6 +58,9 @@ pub enum ValueType {
     /// Label identifier
     Label,
 
+    /// :Symbol identifier
+    Symbol,
+
     /// Null
     Null,
 
@@ -125,6 +128,7 @@ impl fmt::Display for ValueType {
             Self::Require => f.write_str("require"),
             Self::Macro => f.write_str("macro"),
             Self::Label => f.write_str("label"),
+            Self::Symbol => f.write_str("symbol"),
             Self::Null => f.write_str("null"),
             Self::Array(children) => f.write_fmt(format_args!(
                 "[{}]",

@@ -147,6 +147,8 @@ pub enum Token {
     KeySection(Location),
     #[token("block", base_callback, priority = 10)]
     KeyBlock(Location),
+    #[token("symbol", base_callback, priority = 10)]
+    KeySymbol(Location),
 
     // Unused but reserved
     #[token("module", base_callback, priority = 10)]
@@ -204,6 +206,10 @@ pub enum Token {
         (base_callback(x), x.slice().trim_start_matches('!').to_string())
     }, priority = 7)]
     LabelIdentifier((Location, String)),
+    #[regex(r"\:[a-zA-Z][a-zA-Z0-9_\-\/]*", |x| {
+        (base_callback(x), x.slice().trim_start_matches(':').to_string())
+    }, priority = 7)]
+    SymbolIdentifier((Location, String)),
     #[regex(r"\$[a-zA-Z][a-zA-Z0-9_\-]*", |x| {
         (base_callback(x), x.slice().trim_start_matches('$').to_string()) }, priority = 8
     )]

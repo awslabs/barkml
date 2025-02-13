@@ -1,3 +1,11 @@
+## 0.8.0
+
+Changes:
+
+* New get_child method in Walk for loading child statements
+* Label's can no longer be a standalone value as this causes conflicts in parsing
+* Introduces Symbol identifiers that start with :, this replaces using standalone label values
+
 ## 0.7.0
 
 Changes:

@@ -1,3 +1,9 @@
+## 0.8.1
+
+Fixes:
+
+* Fixes implicit conversion from symbol to string
+
 ## 0.8.0
 
 Changes:

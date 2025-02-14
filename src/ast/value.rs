@@ -101,7 +101,22 @@ macro_rules! try_into {
     };
 }
 
-try_into!(as_string, String, ValueType::String);
+impl<'a> TryFrom<&'a Value> for String {
+    type Error = error::Error;
+
+    fn try_from(value: &'a Value) -> Result<Self, Self::Error> {
+        match value.type_of() {
+            ValueType::String => Ok(value.as_string().unwrap().clone()),
+            ValueType::Symbol => Ok(value.as_symbol().unwrap().clone()),
+            vtype => error::ImplicitConvertSnafu {
+                left: ValueType::String,
+                right: vtype,
+            }
+            .fail(),
+        }
+    }
+}
+
 try_into!(as_i8, i8, ValueType::I8);
 try_into!(as_i16, i16, ValueType::I16);
 try_into!(as_i32, i32, ValueType::I32);

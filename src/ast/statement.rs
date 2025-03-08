@@ -253,6 +253,7 @@ impl Statement {
     pub fn get_grouped(&self) -> Option<&IndexMap<String, Statement>> {
         match &self.data {
             StatementData::Group(contents) => Some(contents),
+            StatementData::Labeled(_, contents) => Some(contents),
             _ => None,
         }
     }

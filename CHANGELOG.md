@@ -1,3 +1,9 @@
+## 0.8.2
+
+Fixes:
+
+* Blocks are not treated as grouped in statement
+
 ## 0.8.1
 
 Fixes:
